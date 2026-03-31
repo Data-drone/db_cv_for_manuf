@@ -15,12 +15,14 @@ Design document for a metadata-driven image library on Databricks, built on Unit
                     │    /processed/   ← resized/norm  │
                     │                                  │
                     │  Delta Tables (metadata)         │
-                    │    images        ← file registry │
-                    │    tags          ← free-form     │
-                    │    annotations   ← bbox/segment  │
-                    │    label_tasks   ← review queue  │
-                    │    datasets      ← curated sets  │
-                    │    dataset_images← membership    │
+                    │    images             ← registry │
+                    │    tags               ← free-form│
+                    │    classifications    ← img-level│
+                    │    annotations        ← bbox det │
+                    │    segmentation_masks ← pixel    │
+                    │    label_tasks        ← queue    │
+                    │    datasets           ← curated  │
+                    │    dataset_images     ← splits   │
                     └─────────────────────────────────┘
                               │
               ┌───────────────┼───────────────┐
@@ -103,9 +105,51 @@ Example tags:
 
 This approach is more flexible than adding columns. You can add new tag dimensions without schema migrations.
 
-### 1.3 `annotations` — Bounding Boxes & Segmentation
+### 1.3 `classifications` — Image-Level Labels
 
-Stores object-level annotations for detection/segmentation tasks.
+For classification tasks (e.g. "is this image corroded?", "what type of defect?", "is PPE worn?"). One row per image-class assignment.
+
+```sql
+CREATE TABLE classifications (
+  classification_id STRING NOT NULL,        -- UUID
+  image_id        STRING NOT NULL,
+  label_class     STRING NOT NULL,          -- e.g. "corroded", "good", "helmet_worn"
+  taxonomy        STRING,                   -- Grouping: "defect_type", "ppe_status", "scene"
+
+  -- Multi-class vs multi-label
+  -- Multi-class: one row per image (mutually exclusive classes)
+  -- Multi-label: multiple rows per image (independent labels)
+  is_primary      BOOLEAN DEFAULT TRUE,     -- For multi-class: the winning label
+
+  -- Soft labels / probabilities (optional — useful for distillation)
+  probability     DOUBLE,                   -- Model confidence or annotator certainty
+
+  -- Provenance
+  annotation_source STRING,                 -- "original_dataset", "label_studio", "model_v2"
+  annotated_by    STRING,                   -- Human annotator or model name
+  annotated_at    TIMESTAMP,
+  confidence      DOUBLE,                   -- Overall annotation confidence (0-1)
+  is_verified     BOOLEAN DEFAULT FALSE     -- Human-reviewed flag
+)
+USING DELTA
+PARTITIONED BY (taxonomy);
+```
+
+**Why a separate table from detection annotations?**
+- Classification has no spatial component — mixing bbox columns with image-level labels creates confusion and wasted NULLs
+- Partitioning by `taxonomy` keeps queries fast when you're working on one classification task
+- Soft labels / probabilities are common in classification but rare in detection
+- A single image can have labels from multiple taxonomies simultaneously (defect type AND severity AND ppe status)
+
+Example classification use cases from our datasets:
+- **Corrosion**: binary classification (corroded / not corroded)
+- **DeepPCB**: defect type classification (open, short, mousebite, spur, copper, pin-hole)
+- **SHWD**: PPE compliance classification (compliant / non-compliant)
+- **General**: image quality classification (good / blurry / dark / occluded)
+
+### 1.4 `annotations` — Bounding Boxes (Object Detection)
+
+Stores object-level annotations for detection tasks. One row per detected object.
 
 ```sql
 CREATE TABLE annotations (
@@ -114,17 +158,10 @@ CREATE TABLE annotations (
   label_class     STRING NOT NULL,          -- e.g. "helmet", "no_helmet", "corrosion"
 
   -- Bounding box (normalised 0-1 relative to image dimensions)
-  bbox_x          DOUBLE,                   -- Top-left x
-  bbox_y          DOUBLE,                   -- Top-left y
-  bbox_w          DOUBLE,                   -- Width
-  bbox_h          DOUBLE,                   -- Height
-
-  -- Segmentation (optional)
-  segmentation    ARRAY<DOUBLE>,            -- Polygon points [x1,y1,x2,y2,...]
-  mask_rle        STRING,                   -- Run-length encoded mask
-
-  -- Classification (for image-level labels, no bbox needed)
-  is_image_level  BOOLEAN DEFAULT FALSE,
+  bbox_x          DOUBLE NOT NULL,          -- Top-left x
+  bbox_y          DOUBLE NOT NULL,          -- Top-left y
+  bbox_w          DOUBLE NOT NULL,          -- Width
+  bbox_h          DOUBLE NOT NULL,          -- Height
 
   -- Provenance
   annotation_source STRING,                 -- "original_dataset", "label_studio", "model_v2"
@@ -139,7 +176,52 @@ PARTITIONED BY (label_class);
 
 **Why normalised coordinates (0-1)?** Images may be resized/cropped during preprocessing. Normalised coords stay valid regardless of resolution.
 
-### 1.4 `datasets` — Curated Training Sets
+### 1.5 `segmentation_masks` — Pixel-Level Annotations
+
+For semantic and instance segmentation tasks. Masks are stored as files in a volume (not in Delta) since they're binary image data. The table tracks metadata and links to the mask files.
+
+```sql
+CREATE TABLE segmentation_masks (
+  mask_id         STRING NOT NULL,          -- UUID
+  image_id        STRING NOT NULL,
+  label_class     STRING NOT NULL,          -- e.g. "corrosion", "crack", "weld_defect"
+  mask_type       STRING NOT NULL,          -- "semantic", "instance", "panoptic"
+
+  -- Mask storage (one of these will be populated)
+  mask_file_path  STRING,                   -- Volume path to mask PNG/NPY file
+  mask_rle        STRING,                   -- Run-length encoded mask (COCO-style, for smaller masks)
+  polygon_points  ARRAY<DOUBLE>,            -- Polygon vertices [x1,y1,x2,y2,...] (normalised 0-1)
+
+  -- Instance segmentation
+  instance_id     INT,                      -- Distinguishes separate instances of same class
+
+  -- Provenance
+  annotation_source STRING,
+  annotated_by    STRING,
+  annotated_at    TIMESTAMP,
+  confidence      DOUBLE,
+  is_verified     BOOLEAN DEFAULT FALSE
+)
+USING DELTA
+PARTITIONED BY (label_class);
+```
+
+Mask files live in a dedicated volume folder:
+```
+/Volumes/brian_gen_ai/cv_manufacturing/masks/
+├── semantic/           ← Single-channel PNGs (pixel value = class ID)
+│   └── {image_id}.png
+└── instance/           ← Multi-channel or indexed PNGs
+    └── {image_id}.png
+```
+
+**Why separate masks from detection annotations?**
+- Mask data is fundamentally different — it's spatial (pixel-level) not geometric (boxes)
+- Mask files can be large (same resolution as source image) and belong in volumes, not Delta
+- Different tools consume masks differently (segmentation models expect mask images, not bbox coords)
+- Some datasets have both detection boxes AND segmentation masks for the same objects — keeping them in separate tables avoids conflating the two
+
+### 1.6 `datasets` — Curated Training Sets
 
 Named, versioned collections of images for specific training runs.
 
@@ -158,7 +240,7 @@ CREATE TABLE datasets (
 USING DELTA;
 ```
 
-### 1.5 `dataset_images` — Dataset Membership + Splits
+### 1.7 `dataset_images` — Dataset Membership + Splits
 
 ```sql
 CREATE TABLE dataset_images (
@@ -171,7 +253,7 @@ USING DELTA
 PARTITIONED BY (dataset_id, split);
 ```
 
-### 1.6 `label_tasks` — Labelling Queue
+### 1.8 `label_tasks` — Labelling Queue
 
 Tracks what needs human review.
 
@@ -202,6 +284,9 @@ USING DELTA;
 ├── processed/                    ← Resized, normalised, augmented
 │   ├── 512x512/                  ← Standard resolution
 │   └── 224x224/                  ← Model input size
+├── masks/                        ← Segmentation mask files
+│   ├── semantic/                 ← Single-channel class masks
+│   └── instance/                 ← Instance-level masks
 ├── thumbnails/                   ← Small previews for UI
 │   └── 128x128/
 └── exports/                      ← COCO/YOLO format exports for tools
@@ -415,20 +500,61 @@ with mlflow.start_run():
 
 ## 6. Serving Data for Training
 
-### 6.1 Building a PyTorch/Lightning DataLoader
+The DataLoader pattern differs per task type. Below are examples for each.
+
+### 6.1 Classification DataLoader
 
 ```python
 from torch.utils.data import Dataset
 from PIL import Image
 
-class DeltaImageDataset(Dataset):
-    """Read images + annotations from Delta tables."""
+class ClassificationDataset(Dataset):
+    """Image classification from Delta — returns (image, label_index)."""
+
+    def __init__(self, dataset_name, split, taxonomy, transform=None):
+        self.df = spark.sql(f"""
+            SELECT i.file_path,
+                   c.label_class
+            FROM dataset_images di
+            JOIN images i ON di.image_id = i.image_id
+            JOIN classifications c ON i.image_id = c.image_id
+            WHERE di.dataset_id = '{dataset_name}'
+              AND di.split = '{split}'
+              AND c.taxonomy = '{taxonomy}'
+              AND c.is_primary = TRUE
+        """).toPandas()
+
+        # Build class-to-index mapping
+        self.classes = sorted(self.df['label_class'].unique())
+        self.class_to_idx = {c: i for i, c in enumerate(self.classes)}
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        image = Image.open(row['file_path']).convert('RGB')
+        label = self.class_to_idx[row['label_class']]
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label
+```
+
+### 6.2 Object Detection DataLoader
+
+```python
+class DetectionDataset(Dataset):
+    """Object detection from Delta — returns (image, target_dict)."""
 
     def __init__(self, dataset_name, split, transform=None):
-        # Query Delta for this dataset's images
         self.df = spark.sql(f"""
             SELECT i.file_path, i.width, i.height,
-                   collect_list(struct(a.label_class, a.bbox_x, a.bbox_y, a.bbox_w, a.bbox_h)) as boxes
+                   collect_list(struct(
+                     a.label_class, a.bbox_x, a.bbox_y, a.bbox_w, a.bbox_h
+                   )) as boxes
             FROM dataset_images di
             JOIN images i ON di.image_id = i.image_id
             LEFT JOIN annotations a ON i.image_id = a.image_id
@@ -439,18 +565,94 @@ class DeltaImageDataset(Dataset):
 
         self.transform = transform
 
-    def __len__(self):
-        return len(self.df)
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        image = Image.open(row['file_path']).convert('RGB')
+
+        # Convert to format expected by torchvision detection models
+        boxes = []
+        labels = []
+        for b in row['boxes']:
+            if b['label_class'] is not None:
+                # Convert normalised [x,y,w,h] to pixel [x1,y1,x2,y2]
+                x1 = b['bbox_x'] * row['width']
+                y1 = b['bbox_y'] * row['height']
+                x2 = (b['bbox_x'] + b['bbox_w']) * row['width']
+                y2 = (b['bbox_y'] + b['bbox_h']) * row['height']
+                boxes.append([x1, y1, x2, y2])
+                labels.append(b['label_class'])
+
+        target = {"boxes": boxes, "labels": labels}
+
+        if self.transform:
+            image, target = self.transform(image, target)
+
+        return image, target
+```
+
+### 6.3 Segmentation DataLoader
+
+```python
+import numpy as np
+
+class SegmentationDataset(Dataset):
+    """Semantic segmentation from Delta — returns (image, mask_tensor)."""
+
+    def __init__(self, dataset_name, split, transform=None):
+        self.df = spark.sql(f"""
+            SELECT i.file_path,
+                   first(sm.mask_file_path) as mask_path
+            FROM dataset_images di
+            JOIN images i ON di.image_id = i.image_id
+            JOIN segmentation_masks sm ON i.image_id = sm.image_id
+            WHERE di.dataset_id = '{dataset_name}'
+              AND di.split = '{split}'
+              AND sm.mask_type = 'semantic'
+            GROUP BY i.file_path
+        """).toPandas()
+
+        self.transform = transform
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        image = Image.open(row['file_path'])
-        boxes = row['boxes']
+        image = Image.open(row['file_path']).convert('RGB')
+
+        # Load mask — single-channel PNG where pixel value = class ID
+        mask = np.array(Image.open(row['mask_path']))
 
         if self.transform:
-            image, boxes = self.transform(image, boxes)
+            image, mask = self.transform(image, mask)
 
-        return image, boxes
+        return image, mask
+```
+
+### 6.4 Multi-Task DataLoader
+
+For models that do multiple tasks (e.g. classify + detect), query from all relevant tables:
+
+```python
+class MultiTaskDataset(Dataset):
+    """Returns (image, {"classification": label, "boxes": [...], "mask": ...})"""
+
+    def __init__(self, dataset_name, split, task_types, transform=None):
+        # Base query: always start from dataset membership
+        self.images = spark.sql(f"""
+            SELECT di.image_id, i.file_path, i.width, i.height
+            FROM dataset_images di
+            JOIN images i ON di.image_id = i.image_id
+            WHERE di.dataset_id = '{dataset_name}' AND di.split = '{split}'
+        """).toPandas()
+
+        self.task_types = task_types
+        self.transform = transform
+
+        # Pre-fetch task-specific data as lookups
+        if "classification" in task_types:
+            self.class_map = ...  # Query classifications table
+        if "detection" in task_types:
+            self.bbox_map = ...   # Query annotations table
+        if "segmentation" in task_types:
+            self.mask_map = ...   # Query segmentation_masks table
 ```
 
 ### 6.2 Mosaic StreamingDataset (for large-scale training)
@@ -527,8 +729,41 @@ HAVING count(DISTINCT split) > 1;  -- Should return 0 rows
 
 ## 8. Query Examples
 
+### Classification queries
+
 ```sql
--- Find all helmet images with high-quality annotations
+-- Class distribution for a classification dataset
+SELECT c.label_class, di.split, count(*) as count
+FROM dataset_images di
+JOIN classifications c ON di.image_id = c.image_id
+WHERE di.dataset_id = 'corrosion_binary_v1'
+  AND c.taxonomy = 'corrosion_status'
+GROUP BY c.label_class, di.split
+ORDER BY di.split, count DESC;
+
+-- Find images where model and human disagree (label review)
+SELECT c_human.image_id, c_human.label_class as human_label,
+       c_model.label_class as model_label, c_model.confidence
+FROM classifications c_human
+JOIN classifications c_model ON c_human.image_id = c_model.image_id
+  AND c_human.taxonomy = c_model.taxonomy
+WHERE c_human.annotation_source = 'label_studio'
+  AND c_model.annotation_source LIKE 'model_%'
+  AND c_human.label_class != c_model.label_class;
+
+-- Multi-label: find images tagged with BOTH "corroded" and "outdoor"
+SELECT i.image_id, i.file_path
+FROM images i
+JOIN classifications c1 ON i.image_id = c1.image_id
+  AND c1.taxonomy = 'corrosion_status' AND c1.label_class = 'corroded'
+JOIN classifications c2 ON i.image_id = c2.image_id
+  AND c2.taxonomy = 'scene_type' AND c2.label_class = 'outdoor';
+```
+
+### Detection queries
+
+```sql
+-- Find all helmet images with high-quality verified annotations
 SELECT i.file_path, a.label_class, a.bbox_x, a.bbox_y, a.bbox_w, a.bbox_h
 FROM images i
 JOIN annotations a ON i.image_id = a.image_id
@@ -536,7 +771,7 @@ JOIN tags t ON i.image_id = t.image_id AND t.tag_key = 'quality' AND t.tag_value
 WHERE a.label_class IN ('hat', 'person')
   AND a.is_verified = TRUE;
 
--- Dataset statistics
+-- Detection dataset split statistics
 SELECT di.split,
        count(DISTINCT di.image_id) as images,
        count(a.annotation_id) as annotations,
@@ -546,52 +781,130 @@ JOIN annotations a ON di.image_id = a.image_id
 WHERE di.dataset_id = 'helmet_detection_v3'
 GROUP BY di.split;
 
--- Find unlabelled images for a given domain
+-- Average objects per image (useful for anchor box tuning)
+SELECT a.label_class,
+       count(*) / count(DISTINCT a.image_id) as avg_objects_per_image,
+       avg(a.bbox_w) as avg_width,
+       avg(a.bbox_h) as avg_height
+FROM annotations a
+WHERE a.label_class IN ('hat', 'person')
+GROUP BY a.label_class;
+```
+
+### Segmentation queries
+
+```sql
+-- Find images with both detection boxes and segmentation masks
+SELECT i.image_id, i.file_path,
+       count(DISTINCT a.annotation_id) as bbox_count,
+       count(DISTINCT sm.mask_id) as mask_count
+FROM images i
+JOIN annotations a ON i.image_id = a.image_id
+JOIN segmentation_masks sm ON i.image_id = sm.image_id
+GROUP BY i.image_id, i.file_path;
+
+-- Segmentation class pixel coverage (requires reading mask files, pseudocode)
+-- Useful for checking class imbalance in segmentation datasets
+SELECT sm.label_class, count(*) as mask_count
+FROM segmentation_masks sm
+WHERE sm.mask_type = 'semantic'
+GROUP BY sm.label_class;
+```
+
+### Cross-cutting queries
+
+```sql
+-- Find unlabelled images for a given domain (no classification OR detection labels)
 SELECT i.image_id, i.file_path
 FROM images i
+LEFT JOIN classifications c ON i.image_id = c.image_id
 LEFT JOIN annotations a ON i.image_id = a.image_id
 JOIN tags t ON i.image_id = t.image_id AND t.tag_key = 'domain' AND t.tag_value = 'mining'
-WHERE a.annotation_id IS NULL;
+WHERE c.classification_id IS NULL AND a.annotation_id IS NULL;
 
 -- Annotation progress dashboard
-SELECT lt.status, count(*) as count
+SELECT lt.task_type, lt.status, count(*) as count
 FROM label_tasks lt
-GROUP BY lt.status;
+GROUP BY lt.task_type, lt.status
+ORDER BY lt.task_type, lt.status;
+
+-- What label types exist for each image?
+SELECT i.image_id,
+       CASE WHEN count(DISTINCT c.classification_id) > 0 THEN TRUE ELSE FALSE END as has_classification,
+       CASE WHEN count(DISTINCT a.annotation_id) > 0 THEN TRUE ELSE FALSE END as has_detection,
+       CASE WHEN count(DISTINCT sm.mask_id) > 0 THEN TRUE ELSE FALSE END as has_segmentation
+FROM images i
+LEFT JOIN classifications c ON i.image_id = c.image_id
+LEFT JOIN annotations a ON i.image_id = a.image_id
+LEFT JOIN segmentation_masks sm ON i.image_id = sm.image_id
+GROUP BY i.image_id;
 ```
 
 ---
 
-## 9. Implementation Phases
+## 9. Task Type Summary
+
+| Task | Label Table | Label Granularity | Example |
+|------|-------------|-------------------|---------|
+| Classification | `classifications` | Image-level | "This image shows corrosion" |
+| Object Detection | `annotations` | Object-level (bbox) | "Helmet at [x,y,w,h]" |
+| Segmentation | `segmentation_masks` | Pixel-level (mask) | "These pixels are corrosion" |
+
+A single image can participate in multiple task types simultaneously. For example, a corrosion image might have:
+- A classification label: `corroded` (in `classifications`)
+- Detection boxes around each corroded region (in `annotations`)
+- A pixel-level mask of corroded areas (in `segmentation_masks`)
+
+The `datasets` table's `task_type` field determines which label table(s) the DataLoader queries.
+
+---
+
+## 10. Implementation Phases
 
 ### Phase 1 — Foundation (now)
-- Create Delta tables (`images`, `tags`, `annotations`)
+- Create Delta tables (`images`, `tags`, `classifications`, `annotations`)
 - Write ingestion notebooks for SHWD, DeepPCB, Corrosion
 - Register existing dataset files into the `images` table
-- Parse and load existing annotations
+- Parse and load existing annotations (detection boxes)
+- Derive image-level classifications from existing annotations (e.g. SHWD → "has_helmet" / "no_helmet")
 
-### Phase 2 — Tagging & Curation
+### Phase 2 — Classification Pipeline
+- Build classification labelling workflow
+- Automated classification via pretrained models (CLIP zero-shot, etc.)
+- Create binary classification datasets (corroded/not, defect/clean, PPE/no-PPE)
+- Train baseline classifiers and log to MLflow
+
+### Phase 3 — Tagging & Curation
 - Build automated quality tagging pipeline
 - Create `datasets` and `dataset_images` tables
-- Implement stratified train/val/test splitting
+- Implement stratified train/val/test splitting per task type
 - Build a dataset creation notebook
 
-### Phase 3 — Labelling Pipeline
+### Phase 4 — Labelling Pipeline
 - Set up Label Studio (or Databricks-native UI)
-- Build export/import notebooks for label tasks
+- Build export/import notebooks for label tasks (classify, bbox, segment)
 - Implement active learning loop with model uncertainty
 
-### Phase 4 — Training Integration
-- PyTorch DataLoader backed by Delta queries
-- MLflow integration for data versioning + lineage
+### Phase 5 — Segmentation & Multi-Task
+- Create `segmentation_masks` table and masks volume
+- Build mask generation pipeline (from detection boxes or manual annotation)
+- Multi-task DataLoaders for joint training
 - MDS export for distributed training
+
+### Phase 6 — Training Integration
+- Task-specific PyTorch DataLoaders backed by Delta queries
+- MLflow integration for data versioning + lineage
 - Model registry with dataset version tracking
 
 ---
 
-## 10. Open Questions
+## 11. Open Questions
 
 1. **Thumbnail storage** — Store as base64 in Delta (fast queries, larger tables) or as separate files in volumes (smaller tables, extra I/O)?
-2. **Image embeddings** — Should we store CLIP/DINOv2 embeddings in Delta for similarity search and clustering? Could be a separate `embeddings` table with vector column.
+2. **Image embeddings** — Should we store CLIP/DINOv2 embeddings in Delta for similarity search and clustering? Could be a separate `embeddings` table with vector column. Useful for zero-shot classification and finding similar images for labelling.
 3. **Multi-annotator agreement** — Do we need inter-annotator agreement tracking? (Multiple annotations per image from different annotators, with a consensus mechanism.)
 4. **Access patterns** — Will training mostly happen on Databricks clusters (direct volume access) or external GPUs (need export/download)?
 5. **Scale expectations** — Current datasets are ~18K images total. If this grows to 100K+ we may want to consider Photon-optimized tables and Z-ordering on frequently filtered columns.
+6. **Classification taxonomy management** — Should taxonomies (class hierarchies, valid label values) be stored in a separate reference table? Useful for enforcing consistency and supporting hierarchical classification (e.g. defect → crack → fatigue_crack).
+7. **Weak supervision / programmatic labelling** — For classification at scale, consider Snorkel-style labelling functions that generate noisy labels from heuristics, then combine them. This could rapidly bootstrap classification labels before investing in human annotation.
+8. **Finetuning vs training from scratch** — Classification and segmentation will likely start from pretrained backbones (ImageNet, COCO). The dataset structure should support tracking which pretrained weights were used alongside the data version.
