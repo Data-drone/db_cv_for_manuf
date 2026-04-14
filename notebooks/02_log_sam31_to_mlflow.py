@@ -95,18 +95,65 @@ print(f"MLflow registry URI: {mlflow.get_registry_uri()}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 5. Log the model to MLflow
+# MAGIC ## 5. Log the model to MLflow using pyfunc wrapper
+# MAGIC
+# MAGIC Unity Catalog requires a proper MLflow model format with a model signature
+# MAGIC (input/output type specs). We wrap the SAM 3.1 checkpoint in a pyfunc model.
 
 # COMMAND ----------
 
 import json
+import numpy as np
+from mlflow.models.signature import ModelSignature
+from mlflow.types.schema import Schema, ColSpec, TensorSpec
 
 # Load the model config for metadata
 config_path = os.path.join(local_path, "config.json")
 with open(config_path) as f:
     model_config = json.load(f)
 
-# Define model metadata
+# Define a pyfunc wrapper for SAM 3.1
+class Sam31Wrapper(mlflow.pyfunc.PythonModel):
+    """
+    MLflow pyfunc wrapper for SAM 3.1.
+    Stores the checkpoint and config as artifacts.
+    For inference, use the SAM 3 Python API directly — this wrapper
+    serves as a model registry entry with proper signature metadata.
+    """
+
+    def load_context(self, context):
+        """Load model artifacts when the model is loaded."""
+        self.model_dir = context.artifacts["model_dir"]
+
+    def predict(self, context, model_input, params=None):
+        """
+        Placeholder predict — SAM 3.1 inference should use the native
+        Sam3Processor API for full functionality (masks, boxes, scores).
+        This returns a status message for signature validation.
+        """
+        return {"status": "Use SAM 3 native API for inference. See sam3.model_builder.build_sam3_image_model()"}
+
+
+# Define model signature
+# Input: image path (string) + text prompt (string)
+# Output: detection results (string/json)
+signature = ModelSignature(
+    inputs=Schema([
+        ColSpec("string", "image_path"),
+        ColSpec("string", "text_prompt"),
+    ]),
+    outputs=Schema([
+        ColSpec("string", "status"),
+    ]),
+)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 6. Log and register in Unity Catalog
+
+# COMMAND ----------
+
 tags = {
     "source": "huggingface",
     "hf_model_id": HF_MODEL_ID,
@@ -120,9 +167,8 @@ tags = {
     "framework": "pytorch",
 }
 
-# Log the model artifacts to MLflow
 with mlflow.start_run(run_name="sam3.1_registration") as run:
-    # Log model config and metadata
+    # Log config and metadata
     mlflow.log_dict(model_config, "model_config.json")
     mlflow.log_params({
         "hf_model_id": HF_MODEL_ID,
@@ -131,20 +177,36 @@ with mlflow.start_run(run_name="sam3.1_registration") as run:
         "num_params": "848M",
     })
 
-    # Log the full model directory as artifacts
-    mlflow.log_artifacts(local_path, artifact_path="model")
+    # Log the model with pyfunc wrapper and proper signature
+    model_info = mlflow.pyfunc.log_model(
+        artifact_path="sam3_1_model",
+        python_model=Sam31Wrapper(),
+        artifacts={"model_dir": local_path},
+        signature=signature,
+        registered_model_name=FULL_MODEL_NAME,
+        pip_requirements=[
+            "torch>=2.7",
+            "torchvision",
+            "timm>=1.0.17",
+            "huggingface_hub",
+            "pillow",
+        ],
+        metadata={
+            "hf_model_id": HF_MODEL_ID,
+            "architecture": "Sam3VideoModel",
+            "version": "3.1",
+            "params": "848M",
+        },
+    )
 
-    # Get the run URI for registration
     run_id = run.info.run_id
-    artifact_uri = f"runs:/{run_id}/model"
-
     print(f"Run ID: {run_id}")
-    print(f"Artifact URI: {artifact_uri}")
+    print(f"Model URI: {model_info.model_uri}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 6. Register the model in Unity Catalog
+# MAGIC ## 7. Set alias and verify
 
 # COMMAND ----------
 
@@ -152,72 +214,25 @@ from mlflow import MlflowClient
 
 client = MlflowClient()
 
-# Create the registered model if it doesn't exist
-try:
-    client.create_registered_model(
-        name=FULL_MODEL_NAME,
-        description=(
-            "SAM 3.1 (Segment Anything with Concepts) by Meta AI. "
-            "Unified foundation model for promptable segmentation in images and videos. "
-            "Supports text prompts, visual prompts (points, boxes, masks), and "
-            "open-vocabulary concept segmentation. "
-            "848M parameters, DETR-based detector + SAM 2 tracker architecture. "
-            "SAM 3.1 adds Object Multiplex for ~7x faster multi-object tracking."
-        ),
-        tags=tags,
-    )
-    print(f"Created registered model: {FULL_MODEL_NAME}")
-except Exception as e:
-    if "RESOURCE_ALREADY_EXISTS" in str(e):
-        print(f"Registered model already exists: {FULL_MODEL_NAME}")
-    else:
-        raise
-
-# COMMAND ----------
-
-# Create a model version from the logged artifacts
-mv = client.create_model_version(
-    name=FULL_MODEL_NAME,
-    source=artifact_uri,
-    run_id=run_id,
-    description="SAM 3.1 base checkpoint (sam3.1_multiplex.pt) from HuggingFace facebook/sam3.1",
-    tags={
-        "stage": "base",
-        "finetuned": "false",
-        "source_checkpoint": "sam3.1_multiplex.pt",
-    },
-)
-
-print(f"Model version created: {FULL_MODEL_NAME} v{mv.version}")
-print(f"Status: {mv.status}")
-
-# COMMAND ----------
-
-# Set alias for easy reference
-client.set_registered_model_alias(
-    name=FULL_MODEL_NAME,
-    alias="base",
-    version=mv.version,
-)
-print(f"Alias 'base' set to version {mv.version}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 7. Verify registration
-
-# COMMAND ----------
-
-# Verify the model is registered
-model_info = client.get_registered_model(FULL_MODEL_NAME)
-print(f"Model: {model_info.name}")
-print(f"Description: {model_info.description[:100]}...")
-print(f"Tags: {model_info.tags}")
-
-# List versions
+# Get the latest version
 versions = client.search_model_versions(f"name='{FULL_MODEL_NAME}'")
-for v in versions:
-    print(f"  Version {v.version}: status={v.status}, aliases={v.aliases}")
+if versions:
+    latest = max(versions, key=lambda v: int(v.version))
+    # Set alias
+    client.set_registered_model_alias(
+        name=FULL_MODEL_NAME,
+        alias="base",
+        version=latest.version,
+    )
+    # Update tags
+    for key, value in tags.items():
+        client.set_registered_model_tag(FULL_MODEL_NAME, key, value)
+
+    print(f"Model version: {FULL_MODEL_NAME} v{latest.version}")
+    print(f"Alias 'base' set to version {latest.version}")
+    print(f"Status: {latest.status}")
+else:
+    print("No model versions found")
 
 # COMMAND ----------
 
