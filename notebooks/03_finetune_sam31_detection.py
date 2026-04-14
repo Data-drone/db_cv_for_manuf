@@ -78,15 +78,13 @@ WORK_DIR = "/tmp/sam3_finetune"
 os.makedirs(WORK_DIR, exist_ok=True)
 
 # ── Dataset config (COCO format) ──────────────────────────────────────
-# Point these to your COCO-format dataset
-# Expected structure:
+# SHWD dataset converted to COCO format in UC volume
+# Structure:
 #   DATASET_ROOT/
-#     train/
-#       <images>
-#       _annotations.coco.json
-#     test/  (or valid/)
-#       <images>
-#       _annotations.coco.json
+#     train/  (5457 images + _annotations.coco.json)
+#     test/   (1517 images + _annotations.coco.json)
+UC_COCO_VOLUME = "/Volumes/brian_gen_ai/cv_manufacturing/coco_datasets"
+DATASET_NAME = "shwd"
 DATASET_ROOT = os.path.join(WORK_DIR, "dataset")
 
 # ── Model config ──────────────────────────────────────────────────────
@@ -94,12 +92,12 @@ HF_MODEL_ID = "facebook/sam3.1"
 HF_TOKEN = os.environ.get("HF_TOKEN")  # Set via Databricks secrets or env var
 
 # ── Training hyperparameters ──────────────────────────────────────────
-NUM_EPOCHS = 20
+NUM_EPOCHS = 3  # Start small to validate pipeline; increase for real training
 LEARNING_RATE_SCALE = 0.1
 TRAIN_BATCH_SIZE = 1
 NUM_GPUS = 1  # Single GPU on A10, up to 8 on H100
 RESOLUTION = 1008
-NUM_TRAIN_IMAGES = None  # None = use all images
+NUM_TRAIN_IMAGES = 100  # Subset for quick validation; set None for full training
 ENABLE_SEGMENTATION = False  # Set True for mask loss
 
 # ── MLflow ────────────────────────────────────────────────────────────
@@ -210,11 +208,11 @@ def prepare_coco_dataset(
     return dest_path
 
 
-# Uncomment and modify for your dataset:
-# DATASET_ROOT = prepare_coco_dataset(
-#     src_volume_path=f"{UC_VOLUME_BASE}/your_dataset",
-#     dest_path=DATASET_ROOT,
-# )
+# Copy SHWD COCO dataset from UC volume to local for faster I/O during training
+DATASET_ROOT = prepare_coco_dataset(
+    src_volume_path=os.path.join(UC_COCO_VOLUME, DATASET_NAME),
+    dest_path=DATASET_ROOT,
+)
 
 print(f"Dataset root: {DATASET_ROOT}")
 
