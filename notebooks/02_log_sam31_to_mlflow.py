@@ -32,9 +32,11 @@
 
 import os
 
-# Unity Catalog model path
-UC_CATALOG = "brian_gen_ai"
-UC_SCHEMA = "cv_manufacturing"
+dbutils.widgets.text("catalog", "brian_gen_ai")  # noqa: F821
+dbutils.widgets.text("schema", "cv_manufacturing")  # noqa: F821
+
+UC_CATALOG = dbutils.widgets.get("catalog")  # noqa: F821
+UC_SCHEMA = dbutils.widgets.get("schema")  # noqa: F821
 UC_MODEL_NAME = "sam3_1"
 FULL_MODEL_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_MODEL_NAME}"
 
@@ -252,7 +254,7 @@ print("Temp files cleaned up.")
 # MAGIC
 # MAGIC SAM 3.1 has been registered in Unity Catalog as:
 # MAGIC ```
-# MAGIC brian_gen_ai.cv_manufacturing.sam3_1
+# MAGIC {catalog}.{schema}.sam3_1
 # MAGIC ```
 # MAGIC
 # MAGIC The base checkpoint is available as version 1 with alias `base`.

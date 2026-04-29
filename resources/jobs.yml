@@ -1,0 +1,146 @@
+resources:
+  jobs:
+    extract_raw:
+      name: "[${bundle.target}] CV Extract Raw to Labeling"
+      tasks:
+        - task_key: extract
+          notebook_task:
+            notebook_path: ../notebooks/00_extract_raw_to_labeling_volume.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              dataset: all
+          new_cluster:
+            spark_version: 16.3.x-scala2.12
+            num_workers: 0
+            node_type_id: i3.xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+    import_annotations:
+      name: "[${bundle.target}] CV Import Annotations"
+      tasks:
+        - task_key: import
+          notebook_task:
+            notebook_path: ../notebooks/05_import_existing_annotations.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              dataset: shwd
+          new_cluster:
+            spark_version: 16.3.x-scala2.12
+            num_workers: 0
+            node_type_id: i3.xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+    register_sam31:
+      name: "[${bundle.target}] CV Register SAM 3.1"
+      tasks:
+        - task_key: register
+          notebook_task:
+            notebook_path: ../notebooks/02_log_sam31_to_mlflow.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+          new_cluster:
+            spark_version: 16.3.x-gpu-ml-scala2.12
+            num_workers: 0
+            node_type_id: g5.2xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+    export_to_coco_splits:
+      name: "[${bundle.target}] CV Export to COCO Splits"
+      tasks:
+        - task_key: export
+          notebook_task:
+            notebook_path: ../notebooks/06_app_export_to_coco_splits.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              project_name: SHWD Safety Helmets
+          new_cluster:
+            spark_version: 16.3.x-scala2.12
+            num_workers: 0
+            node_type_id: i3.xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+    finetune_sam31:
+      name: "[${bundle.target}] CV Finetune SAM 3.1"
+      tasks:
+        - task_key: finetune
+          notebook_task:
+            notebook_path: ../notebooks/03_finetune_sam31_detection.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              dataset_name: shwd
+          new_cluster:
+            spark_version: 16.3.x-gpu-ml-scala2.12
+            num_workers: 0
+            node_type_id: g5.2xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+    pipeline_label_to_model:
+      name: "[${bundle.target}] CV Label → Model Pipeline"
+      tasks:
+        - task_key: export_splits
+          notebook_task:
+            notebook_path: ../notebooks/06_app_export_to_coco_splits.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              project_name: SHWD Safety Helmets
+          new_cluster:
+            spark_version: 16.3.x-scala2.12
+            num_workers: 0
+            node_type_id: i3.xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+        - task_key: finetune
+          depends_on:
+            - task_key: export_splits
+          notebook_task:
+            notebook_path: ../notebooks/03_finetune_sam31_detection.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              dataset_name: shwd
+          new_cluster:
+            spark_version: 16.3.x-gpu-ml-scala2.12
+            num_workers: 0
+            node_type_id: g5.2xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode

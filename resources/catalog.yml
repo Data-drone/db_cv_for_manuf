@@ -1,0 +1,36 @@
+resources:
+  schemas:
+    cv_manufacturing:
+      catalog_name: ${var.catalog}
+      name: ${var.schema}
+
+  volumes:
+    raw:
+      catalog_name: ${var.catalog}
+      schema_name: ${var.schema}
+      name: raw
+      volume_type: MANAGED
+
+    labeling:
+      catalog_name: ${var.catalog}
+      schema_name: ${var.schema}
+      name: labeling
+      volume_type: MANAGED
+
+    imports:
+      catalog_name: ${var.catalog}
+      schema_name: ${var.schema}
+      name: imports
+      volume_type: MANAGED
+
+    coco_datasets:
+      catalog_name: ${var.catalog}
+      schema_name: ${var.schema}
+      name: coco_datasets
+      volume_type: MANAGED
+
+    exports:
+      catalog_name: ${var.catalog}
+      schema_name: ${var.schema}
+      name: exports
+      volume_type: MANAGED

@@ -1,0 +1,20 @@
+resources:
+  apps:
+    cv_explorer:
+      name: cv-explorer-${bundle.target}
+      description: "Image labeling & annotation for CV manufacturing datasets"
+      git_repository:
+        provider: gitHub
+        url: https://github.com/Data-drone/db_image_labelling_app
+      git_source:
+        tag: v0.0.2
+      config:
+        command:
+          - python
+          - start.py
+        env:
+          - name: LAKEBASE_PROJECT_ID
+            value: cv-explorer
+      permissions:
+        - user_name: brian.law@databricks.com
+          level: CAN_MANAGE

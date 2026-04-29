@@ -1,0 +1,51 @@
+bundle:
+  name: db-cv-for-manuf
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog name
+    default: brian_gen_ai
+  schema:
+    description: Unity Catalog schema name
+    default: cv_manufacturing
+  hf_secret_scope:
+    description: Databricks secret scope containing the HuggingFace token
+    default: cv-manufacturing
+  hf_secret_key:
+    description: Key within the secret scope for the HuggingFace token
+    default: hf-token
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      host: https://fevm-classic-stable-hdtwu7.cloud.databricks.com
+    variables:
+      catalog: classic_stable_hdtwu7_catalog
+      schema: cv_manufacturing
+    resources:
+      apps:
+        cv_explorer:
+          config:
+            env:
+              - name: DEMO_VOLUME_PATH
+                value: /Volumes/classic_stable_hdtwu7_catalog/cv_manufacturing/labeling
+
+  prod:
+    mode: production
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com
+    variables:
+      catalog: brian_gen_ai
+      schema: cv_manufacturing
+    resources:
+      apps:
+        cv_explorer:
+          config:
+            env:
+              - name: DEMO_VOLUME_PATH
+                value: /Volumes/brian_gen_ai/cv_manufacturing/labeling

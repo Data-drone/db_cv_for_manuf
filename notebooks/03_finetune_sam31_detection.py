@@ -112,8 +112,14 @@ import torch
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 # ── Paths ──────────────────────────────────────────────────────────────
-UC_COCO_VOLUME = "/Volumes/brian_gen_ai/cv_manufacturing/coco_datasets"
-DATASET_NAME = "shwd"
+dbutils.widgets.text("catalog", "brian_gen_ai")  # noqa: F821
+dbutils.widgets.text("schema", "cv_manufacturing")  # noqa: F821
+dbutils.widgets.text("dataset_name", "shwd")  # noqa: F821
+
+UC_CATALOG = dbutils.widgets.get("catalog")  # noqa: F821
+UC_SCHEMA = dbutils.widgets.get("schema")  # noqa: F821
+UC_COCO_VOLUME = f"/Volumes/{UC_CATALOG}/{UC_SCHEMA}/coco_datasets"
+DATASET_NAME = dbutils.widgets.get("dataset_name")  # noqa: F821
 DATASET_ROOT = os.path.join(WORK_DIR, "dataset")
 
 # ── Model ──────────────────────────────────────────────────────────────
@@ -139,8 +145,14 @@ RESOLUTION = 1008  # A10 (24GB) can handle full resolution
 NUM_GPUS = 1
 
 # ── MLflow ────────────────────────────────────────────────────────────
-MLFLOW_EXPERIMENT = "/Users/0def019e-c076-4fbf-9ab5-6f12c4b9396e/cv_manufacturing/sam31_finetune"
-UC_MODEL_NAME = "brian_gen_ai.cv_manufacturing.sam3_1"
+dbutils.widgets.text("mlflow_experiment", "")  # noqa: F821
+_user_exp = dbutils.widgets.get("mlflow_experiment").strip()  # noqa: F821
+try:
+    _current_user = dbutils.notebook.entry_point.getDbutils().notebook().getContext().userName().get()  # noqa: F821
+except Exception:
+    _current_user = "unknown"
+MLFLOW_EXPERIMENT = _user_exp or f"/Users/{_current_user}/cv_manufacturing/sam31_finetune"
+UC_MODEL_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.sam3_1"
 
 print(f"PyTorch: {torch.__version__}")
 print(f"CUDA: {torch.cuda.is_available()}")
@@ -656,7 +668,8 @@ except Exception as e:
     err_detail = _tb.format_exc()
     print(f"CRITICAL: Cannot import sam3: {err_detail}")
     # Write to UC volume for debugging
-    with open("/Volumes/brian_gen_ai/cv_manufacturing/coco_datasets/shwd/import_error_log.txt", "w") as f:
+    _err_log = f"{UC_COCO_VOLUME}/{DATASET_NAME}/import_error_log.txt"
+    with open(_err_log, "w") as f:
         f.write(f"SAM3_DIR: {SAM3_DIR}\n")
         f.write(f"sys.path: {sys.path}\n\n")
         f.write(err_detail)
@@ -702,7 +715,8 @@ if failed:
         err_lines.append(f"--- {name} ---")
         err_lines.append(err)
         err_lines.append("")
-    with open("/Volumes/brian_gen_ai/cv_manufacturing/coco_datasets/shwd/import_error_log.txt", "w") as f:
+    _err_log = f"{UC_COCO_VOLUME}/{DATASET_NAME}/import_error_log.txt"
+    with open(_err_log, "w") as f:
         f.write("\n".join(err_lines))
 
     print(f"\n{len(failed)} modules failed to import!")
@@ -755,7 +769,7 @@ from omegaconf import OmegaConf
 os.environ["HYDRA_FULL_ERROR"] = "1"
 
 # Write error output to UC volume for debugging (accessible outside cluster)
-error_log_path = "/Volumes/brian_gen_ai/cv_manufacturing/coco_datasets/shwd/train_error_log.txt"
+error_log_path = f"{UC_COCO_VOLUME}/{DATASET_NAME}/train_error_log.txt"
 
 try:
     from sam3.train.utils.train_utils import register_omegaconf_resolvers
