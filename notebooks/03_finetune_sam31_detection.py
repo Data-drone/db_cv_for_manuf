@@ -17,7 +17,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install huggingface_hub timm hydra-core omegaconf fvcore fairscale submitit tensorboard scipy torchmetrics scikit-image scikit-learn pycocotools iopath ftfy regex einops
+# MAGIC %pip install "numpy<2" huggingface_hub timm hydra-core omegaconf fvcore fairscale submitit tensorboard scipy torchmetrics scikit-image scikit-learn pycocotools iopath ftfy regex einops
 # MAGIC %restart_python
 
 # COMMAND ----------

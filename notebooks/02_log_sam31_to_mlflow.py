@@ -43,11 +43,22 @@ FULL_MODEL_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_MODEL_NAME}"
 # HuggingFace model
 HF_MODEL_ID = "facebook/sam3.1"
 
-# HuggingFace token — set via Databricks secret or environment variable
-# Option 1: Use Databricks secrets (recommended for production)
-# HF_TOKEN = dbutils.secrets.get(scope="hf", key="token")
-# Option 2: Set directly (for initial setup only)
-HF_TOKEN = os.environ.get("HF_TOKEN")  # Set via Databricks secrets or env var
+# HuggingFace token — prefer Databricks secrets, fall back to env var
+dbutils.widgets.text("hf_secret_scope", "cv-manufacturing")  # noqa: F821
+dbutils.widgets.text("hf_secret_key", "hf-token")  # noqa: F821
+
+HF_TOKEN = os.environ.get("HF_TOKEN")
+if not HF_TOKEN:
+    try:
+        _scope = dbutils.widgets.get("hf_secret_scope")  # noqa: F821
+        _key = dbutils.widgets.get("hf_secret_key")  # noqa: F821
+        HF_TOKEN = dbutils.secrets.get(scope=_scope, key=_key)  # noqa: F821
+        os.environ["HF_TOKEN"] = HF_TOKEN
+        print(f"HF_TOKEN loaded from secret scope '{_scope}'")
+    except Exception as e:
+        print(f"Could not load HF token from secrets: {e}")
+if not HF_TOKEN:
+    raise ValueError("HF_TOKEN not found. Set env var or create the Databricks secret.")
 
 print(f"Model will be registered as: {FULL_MODEL_NAME}")
 print(f"HuggingFace model: {HF_MODEL_ID}")
@@ -226,9 +237,12 @@ if versions:
         alias="base",
         version=latest.version,
     )
-    # Update tags
+    # Update tags (skip any that violate workspace tag policies)
     for key, value in tags.items():
-        client.set_registered_model_tag(FULL_MODEL_NAME, key, value)
+        try:
+            client.set_registered_model_tag(FULL_MODEL_NAME, key, value)
+        except Exception as e:
+            print(f"  [skip tag {key}={value}] {e}")
 
     print(f"Model version: {FULL_MODEL_NAME} v{latest.version}")
     print(f"Alias 'base' set to version {latest.version}")
