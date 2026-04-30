@@ -32,6 +32,7 @@ Computer vision for manufacturing — Databricks Asset Bundle (DAB) that provisi
 | `databricks.yml` | Bundle root config, variables, targets |
 | `resources/catalog.yml` | Schema + UC volume definitions |
 | `resources/cv_explorer.app.yml` | App resource (GitHub `git_source`, tag-pinned) |
+| `resources/jobs.yml` | Job definitions (extract, import, export, finetune, pipeline) |
 | `notebooks/00a_download_raw_datasets.py` | Download raw datasets to `raw` volume |
 | `notebooks/00_extract_raw_to_labeling_volume.py` | Extract flat JPEGs to `labeling` volume |
 | `notebooks/02_log_sam31_to_mlflow.py` | Register SAM 3.1 in MLflow/UC |
@@ -45,11 +46,11 @@ Computer vision for manufacturing — Databricks Asset Bundle (DAB) that provisi
 Three manufacturing/safety CV datasets:
 - **SHWD** — safety helmet wearing detection (~7.5K images, VOC XML annotations, classes: hat/person)
 - **DeepPCB** — PCB defect detection (~1.5K images, 640×640, 6 defect classes)
-- **Corrosion** — corrosion detection (~9.2K images, HuggingFace Parquet with bbox annotations)
+- **Corrosion** — corrosion detection (~840 images, HuggingFace Parquet with bbox annotations)
 
 ## Working with this repo
 
 - Validate bundle changes: `databricks bundle validate -t dev`
 - Deploy: `databricks bundle deploy -t dev`
 - HF token is a manual secret: `databricks secrets put-secret cv-manufacturing hf-token`
-- The plan in `.cursor/plans/stitching_plan.md` tracks remaining integration work (jobs YAML in Phase 6, README in Phase 7).
+- The plan in `.cursor/plans/stitching_plan.md` documents the original integration phases (all complete).

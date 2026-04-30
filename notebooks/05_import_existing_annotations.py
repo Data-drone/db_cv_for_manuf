@@ -149,6 +149,14 @@ else:
 
 PROJECT_ID = project["id"]
 
+if project["sample_count"] == 0:
+    raise RuntimeError(
+        f"Project {PROJECT_ID} has 0 samples — the app's volume scan found no images. "
+        f"This usually means the app service principal's UC permissions (USE CATALOG, "
+        f"READ_VOLUME) haven't propagated yet. Wait ~60s, delete the project, and re-run. "
+        f"Source volume: {cfg['source_volume']}"
+    )
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -353,13 +361,15 @@ def convert_corrosion_to_coco():
                 bboxes = obj["bbox"]
                 for bbox in bboxes:
                     if len(bbox) >= 4:
-                        x1, y1, x2, y2 = bbox[0], bbox[1], bbox[2], bbox[3]
+                        bx, by, bw, bh = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
+                        if bw <= 0 or bh <= 0:
+                            continue
                         annotations.append({
                             "id": ann_id,
                             "image_id": image_id,
                             "category_id": 0,
-                            "bbox": [x1, y1, x2 - x1, y2 - y1],
-                            "area": (x2 - x1) * (y2 - y1),
+                            "bbox": [bx, by, bw, bh],
+                            "area": bw * bh,
                             "iscrowd": 0,
                         })
                         ann_id += 1
@@ -424,6 +434,13 @@ if resp.status_code == 200:
     print(f"  annotations_replaced: {result.get('annotations_replaced', 0)}")
     print(f"  samples_skipped:      {result.get('samples_skipped', 0)}")
     print(f"  samples_created:      {result.get('samples_created', 0)}")
+    if result.get("samples_touched", 0) == 0 and result.get("samples_skipped", 0) > 0:
+        raise RuntimeError(
+            f"Import returned 200 but touched 0 samples ({result['samples_skipped']} skipped). "
+            f"This means all COCO image filenames were skipped because the project has no "
+            f"matching samples. Delete the project, wait for SP permissions to propagate, "
+            f"then re-create and re-import."
+        )
 elif resp.status_code == 422:
     body = resp.json()
     print(f"Validation failed: {body.get('error_count', '?')} errors")
