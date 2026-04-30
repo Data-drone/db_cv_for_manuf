@@ -8,7 +8,7 @@
 # MAGIC - *Model*: facebook/sam3.1 (Segment Anything with Concepts + Object Multiplex)
 # MAGIC - *Architecture*: ViT backbone (1024 embed, 32 depth) + DETR detector + SAM2 tracker
 # MAGIC - *Parameters*: 848M (~6.5 GB checkpoint)
-# MAGIC - *Serving*: Databricks Model Serving with GPU_LARGE (A100 80GB)
+# MAGIC - *Serving*: Databricks Model Serving with GPU_MEDIUM (A10G 24GB)
 # MAGIC - *Precision*: FP16 autocast (BF16 hits unsupported ScalarType in SAM3 ops)
 # MAGIC - *Compiled*: torch.compile enabled for ~1.5-2x speedup
 # MAGIC - *VRAM*: ~5-7 GB for single image inference
@@ -17,17 +17,7 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Install Dependencies
-
-# COMMAND ----------
-
-# MAGIC %pip install mlflow==2.19.0 huggingface_hub pillow sam3 --quiet
-# MAGIC dbutils.library.restartPython()
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 2. Configuration
+# MAGIC ## 1. Widget Definitions
 
 # COMMAND ----------
 
@@ -35,6 +25,23 @@ dbutils.widgets.text("catalog", "brian_gen_ai")
 dbutils.widgets.text("schema", "cv_manufacturing")
 dbutils.widgets.text("hf_secret_scope", "cv-manufacturing")
 dbutils.widgets.text("hf_secret_key", "hf-token")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 2. Install Dependencies
+
+# COMMAND ----------
+
+# MAGIC %pip install mlflow==2.19.0 "databricks-sdk>=0.55.0" huggingface_hub pillow sam3 --quiet
+# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3. Configuration
+
+# COMMAND ----------
 
 UC_CATALOG = dbutils.widgets.get("catalog")
 UC_SCHEMA = dbutils.widgets.get("schema")
@@ -438,8 +445,6 @@ input_example = pd.DataFrame({"input": [_sample_payload]})
 
 model = SAM3ServingModel()
 
-mlflow.set_experiment(f"/Shared/{UC_SCHEMA}/sam3_serving")
-
 print("Logging SAM 3.1 model to MLflow...")
 with mlflow.start_run(run_name="sam3-1-t4-v1") as run:
     mlflow.pyfunc.log_model(
@@ -460,74 +465,47 @@ print("Model registered!")
 # MAGIC %md
 # MAGIC ## 6. Create Serving Endpoint
 # MAGIC
-# MAGIC Deploys on GPU_LARGE (A100 80GB). SAM 3.1 with FP16 autocast + torch.compile
-# MAGIC uses ~5-7 GB VRAM — fits easily with room for batch processing.
+# MAGIC Deploys on GPU_MEDIUM (A10G 24GB). SAM 3.1 with FP16 autocast + torch.compile
+# MAGIC uses ~5-7 GB VRAM — fits on A10G with room for batch processing.
 
 # COMMAND ----------
 
-import requests
-import json
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.serving import (
+    EndpointCoreConfigInput,
+    ServedEntityInput,
+)
+from databricks.sdk.errors import ResourceAlreadyExists
 
-WORKSPACE_URL = spark.conf.get("spark.databricks.workspaceUrl")
-BASE_URL = f"https://{WORKSPACE_URL}"
-TOKEN = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
-API_HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+w = WorkspaceClient()
 
-# Get latest model version
 from mlflow import MlflowClient
 mc = MlflowClient(registry_uri="databricks-uc")
 versions_list = mc.search_model_versions(f"name='{REGISTERED_MODEL_NAME}'")
 latest_version = max(int(v.version) for v in versions_list)
 print(f"Latest model version: {latest_version}")
 
-# Create endpoint
-endpoint_config = {
-    "name": ENDPOINT_NAME,
-    "config": {
-        "served_entities": [{
-            "entity_name": REGISTERED_MODEL_NAME,
-            "entity_version": str(latest_version),
-            "workload_size": "Small",
-            "workload_type": "GPU_LARGE",
-            "scale_to_zero_enabled": True,
-        }],
-    },
-}
-
-resp = requests.post(
-    f"{BASE_URL}/api/2.0/serving-endpoints",
-    headers=API_HEADERS,
-    json=endpoint_config,
-    timeout=30,
+served_entity = ServedEntityInput(
+    entity_name=REGISTERED_MODEL_NAME,
+    entity_version=str(latest_version),
+    workload_size="Small",
+    workload_type="GPU_MEDIUM",
+    scale_to_zero_enabled=True,
 )
 
-if resp.status_code == 200:
-    print(f"Endpoint created: {ENDPOINT_NAME}")
-elif resp.status_code == 409 or "already exists" in resp.text.lower():
-    print(f"Endpoint {ENDPOINT_NAME} already exists, updating config...")
-    update_resp = requests.put(
-        f"{BASE_URL}/api/2.0/serving-endpoints/{ENDPOINT_NAME}/config",
-        headers=API_HEADERS,
-        json={
-            "served_entities": [{
-                "entity_name": REGISTERED_MODEL_NAME,
-                "entity_version": str(latest_version),
-                "workload_size": "Small",
-                "workload_type": "GPU_LARGE",
-                "scale_to_zero_enabled": True,
-            }],
-        },
-        timeout=30,
+try:
+    w.serving_endpoints.create(
+        name=ENDPOINT_NAME,
+        config=EndpointCoreConfigInput(served_entities=[served_entity]),
+        route_optimized=True,
     )
-    if update_resp.status_code == 409:
-        print("Endpoint has a pending config update already in progress.")
-    else:
-        update_resp.raise_for_status()
-        print("Endpoint config updated.")
-else:
-    print(f"Error creating endpoint: {resp.status_code}")
-    print(resp.text)
-    resp.raise_for_status()
+    print(f"Created endpoint {ENDPOINT_NAME}")
+except ResourceAlreadyExists:
+    w.serving_endpoints.update_config(
+        name=ENDPOINT_NAME,
+        served_entities=[served_entity],
+    )
+    print(f"Updated endpoint {ENDPOINT_NAME}")
 
 # COMMAND ----------
 
@@ -539,7 +517,6 @@ else:
 
 # COMMAND ----------
 
-import requests
 import json
 import base64
 import time
@@ -547,28 +524,11 @@ from PIL import Image
 import io
 import numpy as np
 
-WORKSPACE_URL = spark.conf.get("spark.databricks.workspaceUrl")
-BASE_URL = f"https://{WORKSPACE_URL}"
-TOKEN = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
-HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
-
-# Check endpoint status
-print(f"Checking endpoint status for {ENDPOINT_NAME}...")
-status_resp = requests.get(
-    f"{BASE_URL}/api/2.0/serving-endpoints/{ENDPOINT_NAME}",
-    headers=HEADERS,
-    timeout=30,
-)
-if status_resp.status_code == 200:
-    ep_state = status_resp.json().get("state", {})
-    ready = ep_state.get("ready", "NOT_READY")
-    print(f"Endpoint state: ready={ready}")
-else:
-    print(f"Could not check endpoint status: {status_resp.status_code}")
-    ready = "UNKNOWN"
+ep = w.serving_endpoints.get(name=ENDPOINT_NAME)
+ready = ep.state.ready.value if ep.state and ep.state.ready else "NOT_READY"
+print(f"Endpoint state: ready={ready}")
 
 if ready == "READY":
-    # Create a simple test image (red square on white background)
     arr = np.full((256, 256, 3), 255, dtype=np.uint8)
     arr[64:192, 64:192] = [255, 0, 0]
     test_img = Image.fromarray(arr)
@@ -577,35 +537,32 @@ if ready == "READY":
     test_img.save(buf, format="PNG")
     img_b64 = base64.b64encode(buf.getvalue()).decode()
 
-    # Query with text prompt
     request_payload = json.dumps({
         "image": img_b64,
         "prompt": "red square",
         "prompt_type": "text",
     })
 
-    url = f"{BASE_URL}/serving-endpoints/{ENDPOINT_NAME}/invocations"
-    payload = {"inputs": [request_payload]}
-
     print("\nTest query: segment 'red square' in synthetic image...")
     start = time.time()
     try:
-        resp = requests.post(url, headers=HEADERS, json=payload, timeout=120)
-        resp.raise_for_status()
+        response = w.serving_endpoints.query(
+            name=ENDPOINT_NAME,
+            inputs=[request_payload],
+        )
         elapsed = time.time() - start
-
-        raw = resp.json()
-        if "predictions" in raw:
-            result = json.loads(raw["predictions"][0])
+        predictions = response.predictions
+        if predictions:
+            result = json.loads(predictions[0])
             print(f"Detections: {result.get('num_detections', 0)}")
             print(f"Latency: {elapsed:.2f}s")
             for i, det in enumerate(result.get("detections", [])):
                 print(f"  [{i}] score={det.get('score', 'N/A'):.3f} box={det.get('box', 'N/A')}")
         else:
-            print(f"Unexpected response: {str(raw)[:300]}")
+            print(f"Unexpected response: {response.as_dict()}")
     except Exception as e:
         print(f"Test failed (endpoint may need warmup): {e}")
 else:
     print(f"\nEndpoint not ready (state: {ready}). Container is still deploying.")
-    print(f"Monitor at: {BASE_URL}/#/mlflow/endpoints/{ENDPOINT_NAME}")
+    print(f"Check the UI for endpoint: {ENDPOINT_NAME}")
     print("Run tests manually once READY.")

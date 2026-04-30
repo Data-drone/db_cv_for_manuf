@@ -30,17 +30,7 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Install Dependencies
-
-# COMMAND ----------
-
-# MAGIC %pip install mlflow==2.19.0 transformers>=4.56.0 huggingface_hub pillow --quiet
-# MAGIC dbutils.library.restartPython()
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 2. Configuration
+# MAGIC ## 1. Widget Definitions
 
 # COMMAND ----------
 
@@ -48,6 +38,23 @@ dbutils.widgets.text("catalog", "brian_gen_ai")
 dbutils.widgets.text("schema", "cv_manufacturing")
 dbutils.widgets.text("hf_secret_scope", "cv-manufacturing")
 dbutils.widgets.text("hf_secret_key", "hf-token")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 2. Install Dependencies
+
+# COMMAND ----------
+
+# MAGIC %pip install mlflow==2.19.0 "databricks-sdk>=0.55.0" "transformers>=4.56.0" huggingface_hub pillow --quiet
+# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3. Configuration
+
+# COMMAND ----------
 
 UC_CATALOG = dbutils.widgets.get("catalog")
 UC_SCHEMA = dbutils.widgets.get("schema")
@@ -100,20 +107,11 @@ from PIL import Image
 import io, base64
 
 processor = AutoImageProcessor.from_pretrained(LOCAL_MODEL_DIR)
-# BF16 on A100 — safe (same exponent range as FP32, no NaN).
-# FP16 causes NaN on T4 due to overflow in attention layers.
 model = AutoModel.from_pretrained(LOCAL_MODEL_DIR, torch_dtype=torch.bfloat16).to("cuda").eval()
-
-# torch.compile for ~1.5-2x speedup
-model = torch.compile(model)
 
 test_img = Image.new("RGB", (256, 256), (128, 64, 200))
 inputs = processor(images=test_img, return_tensors="pt")
 pixel_values = inputs["pixel_values"].to("cuda", dtype=torch.bfloat16)
-
-# Warm up compile cache
-with torch.inference_mode():
-    _ = model(pixel_values=pixel_values)
 
 with torch.inference_mode():
     out = model(pixel_values=pixel_values)
@@ -390,40 +388,48 @@ print(f"Registered to: {REGISTERED_MODEL_NAME}")
 # MAGIC %md
 # MAGIC ## 7. Deploy to Serving Endpoint
 # MAGIC
-# MAGIC Creates / updates the serving endpoint on GPU_LARGE (A100).
+# MAGIC Creates / updates the serving endpoint on GPU_MEDIUM (A10G 24GB).
+# MAGIC DINOv3 ViT-L/16 in BF16 uses ~1.2GB VRAM — fits easily on A10G.
 
 # COMMAND ----------
 
-from mlflow.deployments import get_deploy_client
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.serving import (
+    EndpointCoreConfigInput,
+    ServedEntityInput,
+)
+from databricks.sdk.errors import ResourceAlreadyExists
 
 ENDPOINT_NAME = f"cv-dinov3-{UC_SCHEMA}"
-client = get_deploy_client("databricks")
+w = WorkspaceClient()
 
 from mlflow import MlflowClient
 mc = MlflowClient(registry_uri="databricks-uc")
 latest = max(int(v.version) for v in mc.search_model_versions(f"name='{REGISTERED_MODEL_NAME}'"))
 print(f"Deploying v{latest}")
 
-config = {
-    "served_entities": [{
-        "name": "dinov3-a100",
-        "entity_name": REGISTERED_MODEL_NAME,
-        "entity_version": str(latest),
-        "workload_type": "GPU_LARGE",
-        "workload_size": "Small",
-        "scale_to_zero_enabled": True,
-    }]
-}
+served_entity = ServedEntityInput(
+    name="dinov3-a10g",
+    entity_name=REGISTERED_MODEL_NAME,
+    entity_version=str(latest),
+    workload_type="GPU_MEDIUM",
+    workload_size="Small",
+    scale_to_zero_enabled=True,
+)
 
 try:
-    client.create_endpoint(name=ENDPOINT_NAME, config=config)
+    w.serving_endpoints.create(
+        name=ENDPOINT_NAME,
+        config=EndpointCoreConfigInput(served_entities=[served_entity]),
+        route_optimized=True,
+    )
     print(f"Created endpoint {ENDPOINT_NAME}")
-except Exception as e:
-    if "already exists" in str(e).lower() or "RESOURCE_ALREADY_EXISTS" in str(e):
-        client.update_endpoint(endpoint=ENDPOINT_NAME, config=config)
-        print(f"Updated endpoint {ENDPOINT_NAME}")
-    else:
-        raise
+except ResourceAlreadyExists:
+    w.serving_endpoints.update_config(
+        name=ENDPOINT_NAME,
+        served_entities=[served_entity],
+    )
+    print(f"Updated endpoint {ENDPOINT_NAME}")
 
 # COMMAND ----------
 

@@ -1,52 +1,12 @@
 resources:
   jobs:
-    deploy_dinov3:
-      name: "[${bundle.target}] CV Deploy DINOv3 Embedder"
+    setup_environment:
+      name: "[${bundle.target}] CV Setup Environment"
+      parameters:
+        - name: skip_data_setup
+          default: "false"
       tasks:
-        - task_key: log_and_serve
-          notebook_task:
-            notebook_path: ../notebooks/dinov3_serving.py
-            base_parameters:
-              catalog: ${var.catalog}
-              schema: ${var.schema}
-              hf_secret_scope: ${var.hf_secret_scope}
-              hf_secret_key: ${var.hf_secret_key}
-          new_cluster:
-            spark_version: 16.3.x-gpu-ml-scala2.12
-            num_workers: 0
-            node_type_id: g5.2xlarge
-            data_security_mode: SINGLE_USER
-            spark_conf:
-              spark.master: "local[*]"
-              spark.databricks.cluster.profile: singleNode
-            custom_tags:
-              ResourceClass: SingleNode
-
-    deploy_sam31_serving:
-      name: "[${bundle.target}] CV Deploy SAM 3.1 Serving"
-      tasks:
-        - task_key: log_and_serve
-          notebook_task:
-            notebook_path: ../notebooks/sam3_serving.py
-            base_parameters:
-              catalog: ${var.catalog}
-              schema: ${var.schema}
-              hf_secret_scope: ${var.hf_secret_scope}
-              hf_secret_key: ${var.hf_secret_key}
-          new_cluster:
-            spark_version: 16.3.x-gpu-ml-scala2.12
-            num_workers: 0
-            node_type_id: g5.2xlarge
-            data_security_mode: SINGLE_USER
-            spark_conf:
-              spark.master: "local[*]"
-              spark.databricks.cluster.profile: singleNode
-            custom_tags:
-              ResourceClass: SingleNode
-
-    deploy_all_models:
-      name: "[${bundle.target}] CV Deploy All Models"
-      tasks:
+        # --- Model serving (GPU, parallel) ---
         - task_key: deploy_dinov3
           notebook_task:
             notebook_path: ../notebooks/dinov3_serving.py
@@ -85,16 +45,65 @@ resources:
             custom_tags:
               ResourceClass: SingleNode
 
-        - task_key: register_sam31_base
+        # --- Vector Search endpoint (CPU, parallel with model deploys) ---
+        - task_key: setup_vector_search
           notebook_task:
-            notebook_path: ../notebooks/02_log_sam31_to_mlflow.py
+            notebook_path: ../notebooks/07_setup_vector_search.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              vs_endpoint_name: ${var.vs_endpoint_name}
+          new_cluster:
+            spark_version: 16.3.x-scala2.12
+            num_workers: 0
+            node_type_id: i3.xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+        # --- Data setup (skippable via job parameter) ---
+        - task_key: download_datasets
+          condition_task:
+            op: NOT_EQUAL
+            left: "{{job.parameters.skip_data_setup}}"
+            right: "true"
+
+        - task_key: download_raw
+          depends_on:
+            - task_key: download_datasets
+              outcome: "true"
+          notebook_task:
+            notebook_path: ../notebooks/00a_download_raw_datasets.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
           new_cluster:
-            spark_version: 16.3.x-gpu-ml-scala2.12
+            spark_version: 16.3.x-scala2.12
             num_workers: 0
-            node_type_id: g5.2xlarge
+            node_type_id: i3.xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+        - task_key: extract_to_labeling
+          depends_on:
+            - task_key: download_raw
+          notebook_task:
+            notebook_path: ../notebooks/00_extract_raw_to_labeling_volume.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              dataset: all
+          new_cluster:
+            spark_version: 16.3.x-scala2.12
+            num_workers: 0
+            node_type_id: i3.xlarge
             data_security_mode: SINGLE_USER
             spark_conf:
               spark.master: "local[*]"
