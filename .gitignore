@@ -1,0 +1,13 @@
+# Bundle state + local variable overrides
+.databricks/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store
+
+# Local env
+.env

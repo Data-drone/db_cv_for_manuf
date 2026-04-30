@@ -1,29 +1,62 @@
 # Computer Vision for Manufacturing
 
-Databricks Asset Bundle (DAB) that provisions UC resources, deploys an image
-labeling app, and finetunes SAM 3.1 for manufacturing / safety inspection
+Databricks Asset Bundle (DAB) that provisions UC resources, deploys two apps —
+an image **labeling** app (CV Explorer) and an inference / **detection** app
+(CV Inspect) — and finetunes SAM 3.1 for manufacturing / safety inspection
 use cases.
 
 ## Architecture
 
 ```
-Raw datasets ──► Extract (00/00a) ──► Labeling volume
-                                          │
-                                          ▼
-                                    CV Explorer App ◄── Label in UI
-                                          │
-                                          ▼
-                               Import annotations (05)
-                                          │
-                                          ▼
-                              Export COCO splits (06) ──► coco_datasets volume
-                                                              │
-                                                              ▼
-                                                    Finetune SAM 3.1 (03)
-                                                              │
-                                                              ▼
-                                                    MLflow / UC model registry
+┌─────────────────────── TRAINING PIPELINE ────────────────────────┐
+│                                                                   │
+│  Raw datasets                                                     │
+│       │ Extract (00/00a)                                          │
+│       ▼                                                           │
+│  Labeling volume                                                  │
+│       │                                                           │
+│       ▼                                                           │
+│  CV Explorer App  ◄── label in UI                                 │
+│       │ Import (05)                                               │
+│       ▼                                                           │
+│  Export COCO (06) ──► coco_datasets volume                        │
+│       │                                                           │
+│       ▼                                                           │
+│  Finetune SAM 3.1 (03)                                            │
+│       │                                                           │
+│       ▼                                                           │
+│  MLflow / UC Model Registry  ──►  Model Serving endpoint          │
+│                                          │                        │
+└──────────────────────────────────────────┼────────────────────────┘
+                                           │
+                                           ▼
+┌──────────────────── INFERENCE / DETECTION ───────────────────────┐
+│                                                                   │
+│  Image or video upload      OR      UC Volume path                │
+│              │                              │                     │
+│              └──────────────┬───────────────┘                     │
+│                             ▼                                     │
+│                     CV Inspect App  (Plotly Dash)                 │
+│                             │                                     │
+│                             ├──► Finetuned detector endpoint     │
+│                             │      (databricks_endpoint backend)  │
+│                             │                                     │
+│                             └──► Vision LLM via FM API           │
+│                                    (vlm_proxy backend, fallback)  │
+│                             │                                     │
+│                             ▼                                     │
+│                Annotated image  +  detection table                │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
 ```
+
+The **finetuned detector** registered in UC Model Registry is served via a
+Model Serving endpoint and called from the **CV Inspect App**. The app's
+detector layer is pluggable: until a finetuned endpoint is deployed, the
+`vlm_proxy` backend routes inference through a vision LLM (Gemini 2.5 Pro by
+default) using a structured-output prompt — so the UI is usable end-to-end
+before finetuning completes. Switching to the real model is a one-line config
+change in `app/config.py`.
 
 ## Datasets
 
@@ -45,15 +78,74 @@ Raw datasets ──► Extract (00/00a) ──► Labeling volume
 # 1. Validate the bundle
 databricks bundle validate -t dev
 
-# 2. Deploy all resources (schema, volumes, app, jobs)
+# 2. Deploy all resources (schema, volumes, apps, jobs)
 databricks bundle deploy -t dev
 
-# 3. First-deploy: start the app (CLI workaround for initial deploy)
+# 3. First-deploy: start the apps
 databricks bundle run cv_explorer
+databricks bundle run cv_manuf_inspect
 
 # 4. Store the HuggingFace token (manual, one-time)
 databricks secrets put-secret cv-manufacturing hf-token
 ```
+
+## CV Inspect App — deployment & iteration
+
+The CV Inspect app source lives in `app/` and is referenced by
+`resources/cv_manuf_inspect.app.yml` via `source_code_path: ../app`. The
+included `Makefile` wraps the deploy / iteration loop with consistent flags.
+
+### First deploy (full bundle)
+
+```bash
+make deploy CATALOG=<your_catalog>          # creates schema, volumes, apps, jobs
+make post-deploy CATALOG=<your_catalog>     # captures app SP id + grants USE_CATALOG
+```
+
+`post-deploy` writes the app's service principal id into
+`.databricks/bundle/<target>/variable-overrides.json` (gitignored) and runs
+the one-time `USE_CATALOG` grant. After this, the app SP has
+`USE_CATALOG`, `USE_SCHEMA`, and `READ_VOLUME` on the configured catalog.
+
+### Iterating on app code
+
+`bundle deploy` runs Terraform under the hood, which is occasionally blocked
+by a CLI bundled-binary GPG-key issue on older CLI versions. For source-only
+edits (Python / CSS / HTML), use the direct Apps API path which skips
+Terraform entirely:
+
+```bash
+make sync                                   # re-import app/ → workspace; redeploy app
+make logs-url                               # print live /logz URL for stdout/stderr
+```
+
+`make sync` is what to use during development — it takes a few seconds and
+hot-replaces only the app source.
+
+### Configure model backends
+
+Open `app/config.py` and edit the `MODELS` list. Each `ModelEntry` declares:
+
+- `family`: `"vlm"` (vision LLM) or `"detector"`
+- `backend` (detectors only): `"vlm_proxy"` (today, routed through a vision
+  LLM with a structured-output prompt) or `"databricks_endpoint"` (a
+  Databricks Model Serving endpoint returning bounding boxes)
+- `backend_config`: classes, instructions, and either `vlm_endpoint` or
+  `endpoint_name`
+
+Switching a detector entry from `vlm_proxy` to `databricks_endpoint` is the
+one-line change that points the UI at a finetuned model once it's served.
+
+### Common tasks
+
+| Task | Command |
+|------|---------|
+| Validate bundle | `make validate` |
+| Full bundle deploy | `make deploy CATALOG=...` |
+| Post-deploy grants | `make post-deploy CATALOG=...` |
+| Iterate on app source only | `make sync` |
+| View live logs URL | `make logs-url` |
+| Grant catalog access (one-off) | `make grant-catalog CATALOG=...` |
 
 ## Initial data load
 
@@ -112,8 +204,11 @@ databricks bundle run finetune_sam31 -- --param dataset_name=shwd_safety_helmets
 databricks.yml                    # Bundle root config, variables, targets
 resources/
   catalog.yml                     # Schema + 5 UC volumes
-  cv_explorer.app.yml             # App resource (GitHub git_source, tag-pinned)
+  cv_explorer.app.yml             # Labeling app (GitHub git_source, tag-pinned)
+  cv_manuf_inspect.app.yml        # Detection / inference app (./app source)
   jobs.yml                        # 6 job definitions
+app/                              # CV Inspect Dash app source
+  app.py, config.py, inference.py
 notebooks/                        # Databricks notebooks (see table above)
 ```
 

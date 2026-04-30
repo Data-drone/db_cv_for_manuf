@@ -1,0 +1,14 @@
+# Databricks App configuration
+# This file is intentionally minimal; the bundle deployment references ./app as source code.
+command: [
+  "python",
+  "app.py"
+]
+
+# env:
+#   - name: HOST
+#     value: "0.0.0.0"
+#   - name: PORT
+#     value: "8050"
+
+
