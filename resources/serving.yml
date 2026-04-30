@@ -1,0 +1,103 @@
+resources:
+  jobs:
+    deploy_dinov3:
+      name: "[${bundle.target}] CV Deploy DINOv3 Embedder"
+      tasks:
+        - task_key: log_and_serve
+          notebook_task:
+            notebook_path: ../notebooks/dinov3_serving.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              hf_secret_scope: ${var.hf_secret_scope}
+              hf_secret_key: ${var.hf_secret_key}
+          new_cluster:
+            spark_version: 16.3.x-gpu-ml-scala2.12
+            num_workers: 0
+            node_type_id: g5.2xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+    deploy_sam31_serving:
+      name: "[${bundle.target}] CV Deploy SAM 3.1 Serving"
+      tasks:
+        - task_key: log_and_serve
+          notebook_task:
+            notebook_path: ../notebooks/sam3_serving.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              hf_secret_scope: ${var.hf_secret_scope}
+              hf_secret_key: ${var.hf_secret_key}
+          new_cluster:
+            spark_version: 16.3.x-gpu-ml-scala2.12
+            num_workers: 0
+            node_type_id: g5.2xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+    deploy_all_models:
+      name: "[${bundle.target}] CV Deploy All Models"
+      tasks:
+        - task_key: deploy_dinov3
+          notebook_task:
+            notebook_path: ../notebooks/dinov3_serving.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              hf_secret_scope: ${var.hf_secret_scope}
+              hf_secret_key: ${var.hf_secret_key}
+          new_cluster:
+            spark_version: 16.3.x-gpu-ml-scala2.12
+            num_workers: 0
+            node_type_id: g5.2xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+        - task_key: deploy_sam31
+          notebook_task:
+            notebook_path: ../notebooks/sam3_serving.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              hf_secret_scope: ${var.hf_secret_scope}
+              hf_secret_key: ${var.hf_secret_key}
+          new_cluster:
+            spark_version: 16.3.x-gpu-ml-scala2.12
+            num_workers: 0
+            node_type_id: g5.2xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+        - task_key: register_sam31_base
+          notebook_task:
+            notebook_path: ../notebooks/02_log_sam31_to_mlflow.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+          new_cluster:
+            spark_version: 16.3.x-gpu-ml-scala2.12
+            num_workers: 0
+            node_type_id: g5.2xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
