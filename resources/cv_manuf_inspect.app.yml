@@ -1,0 +1,6 @@
+resources:
+  apps:
+    cv_manuf_inspect:
+      name: cv-manuf-inspect-${bundle.target}
+      description: "Computer vision inspection: image/video × finetuned detectors or vision LLMs, served from Databricks."
+      source_code_path: ../app
