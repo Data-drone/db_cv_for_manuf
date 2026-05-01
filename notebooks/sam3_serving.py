@@ -474,6 +474,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import (
     EndpointCoreConfigInput,
     ServedEntityInput,
+    ServingModelWorkloadType,
 )
 from databricks.sdk.errors import ResourceAlreadyExists
 
@@ -486,17 +487,21 @@ latest_version = max(int(v.version) for v in versions_list)
 print(f"Latest model version: {latest_version}")
 
 served_entity = ServedEntityInput(
+    name="sam31-a10g",
     entity_name=REGISTERED_MODEL_NAME,
     entity_version=str(latest_version),
     workload_size="Small",
-    workload_type="GPU_MEDIUM",
+    workload_type=ServingModelWorkloadType.GPU_MEDIUM,
     scale_to_zero_enabled=True,
 )
 
 try:
     w.serving_endpoints.create(
         name=ENDPOINT_NAME,
-        config=EndpointCoreConfigInput(served_entities=[served_entity]),
+        config=EndpointCoreConfigInput(
+            name=ENDPOINT_NAME,
+            served_entities=[served_entity],
+        ),
         route_optimized=True,
     )
     print(f"Created endpoint {ENDPOINT_NAME}")

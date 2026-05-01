@@ -290,16 +290,23 @@ def _normalize_bbox(item: dict) -> tuple[float, float, float, float]:
 
 
 def _detector_via_databricks_endpoint(model: ModelEntry, image_bgr: np.ndarray) -> tuple[list[Detection], str]:
-    """Placeholder for a real Databricks Model Serving detector.
+    """Call a real Databricks Model Serving detector endpoint.
 
-    To wire up: add backend_config={'endpoint_name': '<name>', 'parser': '<key>'}
-    to config.ModelEntry, then implement the parser here. The output contract is
-    identical to the vlm_proxy path so the UI doesn't change.
+    Supports SAM 3.1 response format (text prompt → detections with box/score/mask_rle)
+    and generic bbox-list formats.
     """
     cfg = model.backend_config
     endpoint = cfg["endpoint_name"]
+    prompt = cfg.get("prompt", "object")
     img_b64 = _b64_jpeg(image_bgr)
-    body = {"dataframe_records": [{"image_b64": img_b64}]}
+
+    payload = json.dumps({
+        "image": img_b64,
+        "prompt": prompt,
+        "prompt_type": "text",
+    })
+    body = {"dataframe_records": [{"input": payload}]}
+    print(f"[detector] databricks_endpoint → {endpoint} prompt={prompt!r}", flush=True)
     r = requests.post(
         _endpoint_url(endpoint),
         json=body,
@@ -308,23 +315,59 @@ def _detector_via_databricks_endpoint(model: ModelEntry, image_bgr: np.ndarray) 
     )
     r.raise_for_status()
     data = r.json()
-    raw = data.get("predictions") or data.get("outputs") or data
-    rows = raw[0] if isinstance(raw, list) and raw and isinstance(raw[0], list) else raw
+
     detections: list[Detection] = []
-    if isinstance(rows, list):
-        for it in rows:
-            try:
-                x1, y1, x2, y2 = (float(v) for v in it["bbox"])
-                detections.append(
-                    Detection(
+    raw_str = json.dumps(data)[:2000]
+    h, w = image_bgr.shape[:2]
+
+    predictions = data.get("predictions")
+    if predictions and isinstance(predictions, list):
+        for pred in predictions:
+            output = pred if isinstance(pred, dict) else {}
+            output_str = pred.get("output") if isinstance(pred, dict) else pred
+            if isinstance(output_str, str):
+                try:
+                    output = json.loads(output_str)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            if "detections" in output:
+                classes = cfg.get("classes", [])
+                for i, det in enumerate(output["detections"]):
+                    box = det.get("box", {})
+                    if isinstance(box, dict) and all(k in box for k in ("x1", "y1", "x2", "y2")):
+                        x1 = float(box["x1"]) / w
+                        y1 = float(box["y1"]) / h
+                        x2 = float(box["x2"]) / w
+                        y2 = float(box["y2"]) / h
+                        x1, x2 = sorted((max(0.0, min(1.0, x1)), max(0.0, min(1.0, x2))))
+                        y1, y2 = sorted((max(0.0, min(1.0, y1)), max(0.0, min(1.0, y2))))
+                        label = det.get("label", classes[i % len(classes)] if classes else f"det-{i}")
+                        detections.append(Detection(
+                            label=label,
+                            bbox_norm=(x1, y1, x2, y2),
+                            confidence=float(det.get("score", 0.5)),
+                        ))
+                break
+
+    if not detections:
+        raw = data.get("predictions") or data.get("outputs") or data
+        rows = raw[0] if isinstance(raw, list) and raw and isinstance(raw[0], list) else raw
+        if isinstance(rows, list):
+            for it in rows:
+                if not isinstance(it, dict):
+                    continue
+                try:
+                    x1, y1, x2, y2 = (float(v) for v in it["bbox"])
+                    detections.append(Detection(
                         label=str(it["label"]),
                         bbox_norm=(x1, y1, x2, y2),
                         confidence=float(it.get("confidence", 0.5)),
-                    )
-                )
-            except (KeyError, ValueError, TypeError):
-                continue
-    return detections, json.dumps(data)[:2000]
+                    ))
+                except (KeyError, ValueError, TypeError):
+                    continue
+
+    return detections, raw_str
 
 
 def _draw_boxes(image_bgr: np.ndarray, detections: list[Detection], classes: list[str]) -> np.ndarray:

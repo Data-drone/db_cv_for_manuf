@@ -806,5 +806,5 @@ def _view_run(n_clicks_list):
 
 if __name__ == "__main__":
     host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", "8050"))
+    port = int(os.environ.get("DATABRICKS_APP_PORT", os.environ.get("PORT", "8050")))
     app.run(host=host, port=port, debug=os.environ.get("DEBUG") == "1")

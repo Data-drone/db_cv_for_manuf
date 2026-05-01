@@ -8,6 +8,7 @@ inference layer treat both backends uniformly, so swapping later is a
 config-only change.
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -44,10 +45,24 @@ _VLMS: list[ModelEntry] = [
 # bounding boxes when prompted with strict JSON output. Swap any entry's
 # `backend` to "databricks_endpoint" and update `backend_config` once a real
 # detector serving endpoint exists.
+_SAM31_ENDPOINT = os.environ.get("SAM31_SERVING_ENDPOINT", "cv-sam31-cv_manufacturing")
+
 _DETECTORS: list[ModelEntry] = [
     ModelEntry(
+        id="sam31-ppe-helmet",
+        label="SAM 3.1 — PPE / Helmet detector (finetuned)",
+        family="detector",
+        backend="databricks_endpoint",
+        backend_config={
+            "endpoint_name": _SAM31_ENDPOINT,
+            "classes": ["helmet", "person without helmet"],
+            "prompt": "helmet, person without helmet",
+        },
+        notes="Finetuned SAM 3.1 on SHWD dataset, deployed on GPU_MEDIUM (A10G).",
+    ),
+    ModelEntry(
         id="ppe-helmet",
-        label="PPE / Helmet detector",
+        label="PPE / Helmet detector (VLM proxy)",
         family="detector",
         backend="vlm_proxy",
         backend_config={
@@ -58,7 +73,7 @@ _DETECTORS: list[ModelEntry] = [
                 "(label='helmet') or not (label='person without helmet')."
             ),
         },
-        notes="Backed by Gemini 2.5 Pro (object grounding). Drop in a finetuned SHWD endpoint later.",
+        notes="Backed by Gemini 2.5 Pro (object grounding). Fallback when SAM 3.1 is unavailable.",
     ),
     ModelEntry(
         id="pcb-defects",

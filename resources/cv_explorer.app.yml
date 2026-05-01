@@ -7,14 +7,51 @@ resources:
         provider: gitHub
         url: https://github.com/Data-drone/db_image_labelling_app
       git_source:
-        tag: v0.0.2
+        tag: v0.0.3-beta.0
       config:
         command:
           - python
-          - start.py
+          - app.py
         env:
+          - name: LAKEBASE_AUTO_PROVISION
+            value: "false"
+          - name: USE_LAKEBASE
+            value: "true"
           - name: LAKEBASE_PROJECT_ID
             value: cv-explorer
+          - name: DEMO_VOLUME_PATH
+            value_from: demo-volume
+          - name: SERVING_ENDPOINT
+            value_from: serving-endpoint
+          - name: SERVING_ENDPOINT_ADAPTER
+            value: "sam31"
+          - name: PRE_ANNOTATE_DATABRICKS_JOB_ID
+            value_from: app-preannotate-job
+          - name: FINETUNE_DATABRICKS_JOB_ID
+            value_from: app-finetune-job
+      resources:
+        - name: demo-volume
+          uc_securable:
+            securable_type: VOLUME
+            securable_full_name: ${var.catalog}.${var.schema}.labeling
+            permission: READ_VOLUME
+        - name: export-volume
+          uc_securable:
+            securable_type: VOLUME
+            securable_full_name: ${var.catalog}.${var.schema}.labeling
+            permission: WRITE_VOLUME
+        - name: serving-endpoint
+          serving_endpoint:
+            name: ${var.serving_endpoint_name}
+            permission: CAN_QUERY
+        - name: app-preannotate-job
+          job:
+            id: ${resources.jobs.cv_explorer_preannotate.id}
+            permission: CAN_MANAGE_RUN
+        - name: app-finetune-job
+          job:
+            id: ${resources.jobs.finetune_sam31.id}
+            permission: CAN_MANAGE_RUN
       permissions:
         - user_name: brian.law@databricks.com
           level: CAN_MANAGE

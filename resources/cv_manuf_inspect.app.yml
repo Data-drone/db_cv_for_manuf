@@ -5,6 +5,9 @@ resources:
       description: "Computer vision inspection: image/video × finetuned detectors or vision LLMs, served from Databricks."
       source_code_path: ../app
       config:
+        command:
+          - python
+          - app.py
         env:
           - name: CATALOG
             value: ${var.catalog}
@@ -14,3 +17,13 @@ resources:
             value: ${resources.jobs.cv_manuf_batch_detect.id}
           - name: WAREHOUSE_ID
             value: ${var.warehouse_id}
+          - name: SAM31_SERVING_ENDPOINT
+            value_from: sam31-endpoint
+      resources:
+        - name: sam31-endpoint
+          serving_endpoint:
+            name: ${var.serving_endpoint_name}
+            permission: CAN_QUERY
+      permissions:
+        - user_name: brian.law@databricks.com
+          level: CAN_MANAGE

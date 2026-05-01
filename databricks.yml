@@ -23,6 +23,15 @@ variables:
   vs_endpoint_name:
     description: Databricks Vector Search endpoint name
     default: cv-vector-search
+  lakebase_postgres_branch:
+    description: Lakebase Postgres branch path for the CV Explorer app
+    default: projects/cv-explorer/branches/production
+  lakebase_postgres_database:
+    description: Lakebase Postgres database path for the CV Explorer app
+    default: projects/cv-explorer/branches/production/databases/cv-explorer-db
+  serving_endpoint_name:
+    description: SAM 3.1 model serving endpoint name
+    default: cv-sam31-cv_manufacturing
 
 targets:
   dev:
@@ -30,16 +39,10 @@ targets:
     mode: development
     workspace:
       host: https://fevm-classic-stable-hdtwu7.cloud.databricks.com
+      profile: fevm-classic-stable
     variables:
       catalog: classic_stable_hdtwu7_catalog
       schema: cv_manufacturing
-    resources:
-      apps:
-        cv_explorer:
-          config:
-            env:
-              - name: DEMO_VOLUME_PATH
-                value: /Volumes/classic_stable_hdtwu7_catalog/cv_manufacturing/labeling
 
   prod:
     mode: production
@@ -48,10 +51,3 @@ targets:
     variables:
       catalog: brian_gen_ai
       schema: cv_manufacturing
-    resources:
-      apps:
-        cv_explorer:
-          config:
-            env:
-              - name: DEMO_VOLUME_PATH
-                value: /Volumes/brian_gen_ai/cv_manufacturing/labeling

@@ -1,0 +1,47 @@
+resources:
+  jobs:
+    cv_explorer_preannotate:
+      name: "cv-explorer-preannotate-${bundle.target}"
+      parameters:
+        - name: run_id
+          default: "0"
+      job_clusters:
+        - job_cluster_key: preann_cluster
+          new_cluster:
+            spark_version: 16.3.x-scala2.12
+            node_type_id: i3.xlarge
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: "local[*]"
+            custom_tags:
+              ResourceClass: SingleNode
+            spark_env_vars:
+              USE_LAKEBASE: "true"
+              LAKEBASE_AUTO_PROVISION: "false"
+              LAKEBASE_PROJECT_ID: cv-explorer
+              SERVING_ENDPOINT: ${var.serving_endpoint_name}
+      git_source:
+        git_url: https://github.com/Data-drone/db_image_labelling_app
+        git_provider: gitHub
+        git_tag: v0.0.3-beta.0
+      tasks:
+        - task_key: main
+          job_cluster_key: preann_cluster
+          spark_python_task:
+            python_file: scripts/preannotate_job.py
+            source: GIT
+            parameters:
+              - "{{job.parameters.run_id}}"
+          libraries:
+            - pypi:
+                package: sqlalchemy>=2.0.0
+            - pypi:
+                package: psycopg2-binary>=2.9.0
+            - pypi:
+                package: databricks-sdk>=0.99
+            - pypi:
+                package: Pillow>=10.0.0
+            - pypi:
+                package: pydantic>=2.0.0

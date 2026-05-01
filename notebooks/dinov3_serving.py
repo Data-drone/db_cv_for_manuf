@@ -397,6 +397,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import (
     EndpointCoreConfigInput,
     ServedEntityInput,
+    ServingModelWorkloadType,
 )
 from databricks.sdk.errors import ResourceAlreadyExists
 
@@ -412,7 +413,7 @@ served_entity = ServedEntityInput(
     name="dinov3-a10g",
     entity_name=REGISTERED_MODEL_NAME,
     entity_version=str(latest),
-    workload_type="GPU_MEDIUM",
+    workload_type=ServingModelWorkloadType.GPU_MEDIUM,
     workload_size="Small",
     scale_to_zero_enabled=True,
 )
@@ -420,7 +421,10 @@ served_entity = ServedEntityInput(
 try:
     w.serving_endpoints.create(
         name=ENDPOINT_NAME,
-        config=EndpointCoreConfigInput(served_entities=[served_entity]),
+        config=EndpointCoreConfigInput(
+            name=ENDPOINT_NAME,
+            served_entities=[served_entity],
+        ),
         route_optimized=True,
     )
     print(f"Created endpoint {ENDPOINT_NAME}")
