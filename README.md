@@ -147,15 +147,22 @@ one-line change that points the UI at a finetuned model once it's served.
 | View live logs URL | `make logs-url` |
 | Grant catalog access (one-off) | `make grant-catalog CATALOG=...` |
 
-## Initial data load
+## Environment setup
 
-Run in order — each step depends on the previous:
+Run the setup job to deploy model serving endpoints, create a Vector Search
+endpoint, and optionally download the sample datasets — all in parallel:
 
 ```bash
-# Download raw datasets to the raw volume
-databricks bundle run extract_raw -- --param dataset=all
+# Full setup (models + vector search + datasets)
+databricks bundle run setup_environment
 
-# Import existing annotations into the app (one per dataset)
+# Skip dataset download/extract (models + vector search only)
+databricks bundle run setup_environment -- --param skip_data_setup=true
+```
+
+If you ran setup with datasets, import annotations into the app:
+
+```bash
 databricks bundle run import_annotations -- --param dataset=shwd
 databricks bundle run import_annotations -- --param dataset=deeppcb
 databricks bundle run import_annotations -- --param dataset=corrosion
@@ -180,9 +187,6 @@ Or run the steps individually:
 # Export labeled data from the app into COCO train/test splits
 databricks bundle run export_to_coco_splits -- --param project_name="SHWD Safety Helmets"
 
-# Register SAM 3.1 base model in MLflow (first time only)
-databricks bundle run register_sam31
-
 # Finetune SAM 3.1 on the exported splits
 databricks bundle run finetune_sam31 -- --param dataset_name=shwd_safety_helmets
 ```
@@ -193,7 +197,9 @@ databricks bundle run finetune_sam31 -- --param dataset_name=shwd_safety_helmets
 |----------|---------|
 | `00a_download_raw_datasets.py` | Download raw datasets to `raw` volume |
 | `00_extract_raw_to_labeling_volume.py` | Extract flat JPEGs to `labeling` volume |
-| `02_log_sam31_to_mlflow.py` | Register SAM 3.1 in MLflow / UC |
+| `07_setup_vector_search.py` | Create / verify Vector Search endpoint |
+| `dinov3_serving.py` | Log DINOv3 embedder to UC + deploy serving endpoint |
+| `sam3_serving.py` | Log SAM 3.1 serving model to UC + deploy serving endpoint |
 | `03_finetune_sam31_detection.py` | Finetune SAM 3.1 on COCO detection data |
 | `05_import_existing_annotations.py` | Import annotations into CV Explorer via API |
 | `06_app_export_to_coco_splits.py` | Export from app → train/test COCO splits |
@@ -206,7 +212,8 @@ resources/
   catalog.yml                     # Schema + 5 UC volumes
   cv_explorer.app.yml             # Labeling app (GitHub git_source, tag-pinned)
   cv_manuf_inspect.app.yml        # Detection / inference app (./app source)
-  jobs.yml                        # 6 job definitions
+  setup.yml                       # Setup job (models, vector search, optional data)
+  jobs.yml                        # Job definitions (import, export, finetune, pipeline)
 app/                              # CV Inspect Dash app source
   app.py, config.py, inference.py
 notebooks/                        # Databricks notebooks (see table above)

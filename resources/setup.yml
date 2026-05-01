@@ -1,58 +1,20 @@
 resources:
   jobs:
-    import_annotations:
-      name: "[${bundle.target}] CV Import Annotations"
+    setup_environment:
+      name: "[${bundle.target}] CV Setup Environment"
+      parameters:
+        - name: skip_data_setup
+          default: "false"
       tasks:
-        - task_key: import
+        # --- Model serving (GPU, parallel) ---
+        - task_key: deploy_dinov3
           notebook_task:
-            notebook_path: ../notebooks/05_import_existing_annotations.py
+            notebook_path: ../notebooks/dinov3_serving.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
-              dataset: shwd
-          new_cluster:
-            spark_version: 16.3.x-scala2.12
-            num_workers: 0
-            node_type_id: i3.xlarge
-            data_security_mode: SINGLE_USER
-            spark_conf:
-              spark.master: "local[*]"
-              spark.databricks.cluster.profile: singleNode
-            custom_tags:
-              ResourceClass: SingleNode
-
-    export_to_coco_splits:
-      name: "[${bundle.target}] CV Export to COCO Splits"
-      tasks:
-        - task_key: export
-          notebook_task:
-            notebook_path: ../notebooks/06_app_export_to_coco_splits.py
-            base_parameters:
-              catalog: ${var.catalog}
-              schema: ${var.schema}
-              project_name: SHWD Safety Helmets
-              output_name: shwd
-          new_cluster:
-            spark_version: 16.3.x-scala2.12
-            num_workers: 0
-            node_type_id: i3.xlarge
-            data_security_mode: SINGLE_USER
-            spark_conf:
-              spark.master: "local[*]"
-              spark.databricks.cluster.profile: singleNode
-            custom_tags:
-              ResourceClass: SingleNode
-
-    finetune_sam31:
-      name: "[${bundle.target}] CV Finetune SAM 3.1"
-      tasks:
-        - task_key: finetune
-          notebook_task:
-            notebook_path: ../notebooks/03_finetune_sam31_detection.py
-            base_parameters:
-              catalog: ${var.catalog}
-              schema: ${var.schema}
-              dataset_name: shwd
+              hf_secret_scope: ${var.hf_secret_scope}
+              hf_secret_key: ${var.hf_secret_key}
           new_cluster:
             spark_version: 16.3.x-gpu-ml-scala2.12
             num_workers: 0
@@ -64,17 +26,33 @@ resources:
             custom_tags:
               ResourceClass: SingleNode
 
-    pipeline_label_to_model:
-      name: "[${bundle.target}] CV Label → Model Pipeline"
-      tasks:
-        - task_key: export_splits
+        - task_key: deploy_sam31
           notebook_task:
-            notebook_path: ../notebooks/06_app_export_to_coco_splits.py
+            notebook_path: ../notebooks/sam3_serving.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
-              project_name: SHWD Safety Helmets
-              output_name: shwd
+              hf_secret_scope: ${var.hf_secret_scope}
+              hf_secret_key: ${var.hf_secret_key}
+          new_cluster:
+            spark_version: 16.3.x-gpu-ml-scala2.12
+            num_workers: 0
+            node_type_id: g5.2xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+        # --- Vector Search endpoint (CPU, parallel with model deploys) ---
+        - task_key: setup_vector_search
+          notebook_task:
+            notebook_path: ../notebooks/07_setup_vector_search.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              vs_endpoint_name: ${var.vs_endpoint_name}
           new_cluster:
             spark_version: 16.3.x-scala2.12
             num_workers: 0
@@ -86,19 +64,46 @@ resources:
             custom_tags:
               ResourceClass: SingleNode
 
-        - task_key: finetune
+        # --- Data setup (skippable via job parameter) ---
+        - task_key: download_datasets
+          condition_task:
+            op: NOT_EQUAL
+            left: "{{job.parameters.skip_data_setup}}"
+            right: "true"
+
+        - task_key: download_raw
           depends_on:
-            - task_key: export_splits
+            - task_key: download_datasets
+              outcome: "true"
           notebook_task:
-            notebook_path: ../notebooks/03_finetune_sam31_detection.py
+            notebook_path: ../notebooks/00a_download_raw_datasets.py
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
-              dataset_name: shwd
           new_cluster:
-            spark_version: 16.3.x-gpu-ml-scala2.12
+            spark_version: 16.3.x-scala2.12
             num_workers: 0
-            node_type_id: g5.2xlarge
+            node_type_id: i3.xlarge
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: "local[*]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+
+        - task_key: extract_to_labeling
+          depends_on:
+            - task_key: download_raw
+          notebook_task:
+            notebook_path: ../notebooks/00_extract_raw_to_labeling_volume.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              dataset: all
+          new_cluster:
+            spark_version: 16.3.x-scala2.12
+            num_workers: 0
+            node_type_id: i3.xlarge
             data_security_mode: SINGLE_USER
             spark_conf:
               spark.master: "local[*]"
