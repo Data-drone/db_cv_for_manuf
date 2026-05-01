@@ -1,0 +1,26 @@
+{
+  "theme": "base",
+  "timeline": {
+    "useMaxWidth": false,
+    "padding": 20
+  },
+  "themeVariables": {
+    "primaryColor": "#1B3139",
+    "primaryTextColor": "#FFFFFF",
+    "primaryBorderColor": "#0D1E24",
+    "lineColor": "#2C3032",
+    "secondaryColor": "#F5F7F9",
+    "secondaryTextColor": "#2C3032",
+    "tertiaryColor": "#00A972",
+    "background": "#F5F7F9",
+    "mainBkg": "#F5F7F9",
+    "titleColor": "#1B3139",
+    "fontFamily": "Inter, Helvetica Neue, Arial, sans-serif",
+    "fontSize": "16px",
+    "cScale0": "#FF3621",
+    "cScale1": "#CC4422",
+    "cScale2": "#336644",
+    "cScale3": "#007A52",
+    "cScale4": "#00A972"
+  }
+}

@@ -1,14 +1,18 @@
-# Databricks App configuration
-# This file is intentionally minimal; the bundle deployment references ./app as source code.
-command: [
-  "python",
-  "app.py"
-]
+# Databricks App configuration. When deployed via DAB the env block here
+# is overwritten by the bundle's apps.cv_manuf_inspect.config.env (see
+# resources/cv_manuf_inspect.app.yml) — values below are for the direct-API
+# deploy path used during buildathon iteration.
 
-# env:
-#   - name: HOST
-#     value: "0.0.0.0"
-#   - name: PORT
-#     value: "8050"
+command:
+  - python
+  - app.py
 
-
+env:
+  - name: CATALOG
+    value: "ramcar_motolite_catalog"
+  - name: SCHEMA
+    value: "cv_manufacturing"
+  - name: BATCH_JOB_ID
+    value: "892704710237165"
+  - name: WAREHOUSE_ID
+    value: "19d24a263e8d7502"

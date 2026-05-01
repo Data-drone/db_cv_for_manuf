@@ -1,0 +1,53 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "primaryColor": "#00A972",
+    "primaryTextColor": "#FFFFFF",
+    "primaryBorderColor": "#007A52",
+    "lineColor": "#2C3032",
+    "secondaryColor": "#1B3139",
+    "secondaryTextColor": "#FFFFFF",
+    "tertiaryColor": "#FF3621",
+    "tertiaryTextColor": "#FFFFFF",
+    "background": "#F5F7F9",
+    "mainBkg": "#F5F7F9",
+    "nodeBorder": "#1B3139",
+    "clusterBkg": "#F5F7F9",
+    "clusterBorder": "#1B3139",
+    "titleColor": "#1B3139",
+    "edgeLabelBackground": "#F5F7F9",
+    "fontFamily": "Inter, Helvetica Neue, Arial, sans-serif",
+    "fontSize": "16px"
+  }
+}}%%
+flowchart LR
+    classDef coral fill:#FF3621,stroke:#C42B19,color:#FFFFFF
+    classDef teal fill:#00A972,stroke:#007A52,color:#FFFFFF
+    classDef navy fill:#1B3139,stroke:#0D1E24,color:#FFFFFF
+    classDef swap fill:#1B3139,stroke:#00A972,color:#FFFFFF,stroke-width:3px
+    classDef caption fill:#F5F7F9,stroke:#1B3139,color:#1B3139,stroke-dasharray:5 5
+
+    subgraph LEFT["  Day 1 — vlm_proxy  "]
+        direction TB
+        UI1["CV Inspect\nApp UI"]:::coral
+        VLM["Vision LLM\nGemini 2.5 Pro\nvia FM API"]:::coral
+        OUT1["Bounding boxes via\nstructured-output prompt"]:::coral
+        UI1 --> VLM --> OUT1
+    end
+
+    SWAP["ONE-LINE CONFIG CHANGE\nin app/config.py"]:::swap
+
+    subgraph RIGHT["  Day N — databricks_endpoint  "]
+        direction TB
+        UI2["CV Inspect\nApp UI"]:::teal
+        SAM["Finetuned SAM 3.1\nDetector"]:::teal
+        MSE["Model Serving\nEndpoint"]:::navy
+        OUT2["Native bounding boxes\nfrom finetuned model"]:::teal
+        UI2 --> SAM --> MSE --> OUT2
+    end
+
+    CAPTION["Same UI.  Same UX.  Different brain."]:::caption
+
+    LEFT -- "swap backend" --> SWAP
+    SWAP -- "upgrade to" --> RIGHT
+    SWAP --- CAPTION

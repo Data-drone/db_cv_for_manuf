@@ -1,0 +1,55 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "primaryColor": "#00A972",
+    "primaryTextColor": "#FFFFFF",
+    "primaryBorderColor": "#007A52",
+    "lineColor": "#2C3032",
+    "secondaryColor": "#1B3139",
+    "secondaryTextColor": "#FFFFFF",
+    "tertiaryColor": "#FF3621",
+    "tertiaryTextColor": "#FFFFFF",
+    "background": "#F5F7F9",
+    "mainBkg": "#F5F7F9",
+    "nodeBorder": "#1B3139",
+    "clusterBkg": "#EBF7F2",
+    "clusterBorder": "#007A52",
+    "titleColor": "#1B3139",
+    "edgeLabelBackground": "#F5F7F9",
+    "fontFamily": "Inter, Helvetica Neue, Arial, sans-serif",
+    "fontSize": "14px"
+  }
+}}%%
+flowchart LR
+    classDef teal   fill:#00A972,stroke:#007A52,color:#FFFFFF
+    classDef coral  fill:#FF3621,stroke:#C42B19,color:#FFFFFF
+    classDef bridge fill:#1B3139,stroke:#00A972,color:#FFFFFF,stroke-width:3px
+    classDef inf    fill:#FEF0EE,stroke:#C42B19,color:#FFFFFF
+    classDef bandlabel fill:#1B3139,stroke:#1B3139,color:#FFFFFF,font-size:16px,font-weight:bold
+
+    %% ── TRAINING band (top row) ──────────────────────────────────
+    subgraph TRAIN["  ① TRAINING PIPELINE  "]
+        T1["Raw\nDatasets"]:::teal -->
+        T2["Extract\nnb 00/00a"]:::teal -->
+        T3["Labeling\nVolume"]:::teal -->
+        T4["CV Explorer\nApp — Label UI"]:::teal -->
+        T5["Import\nAnnotations\nnb 05"]:::teal -->
+        T6["Export\nCOCO Splits\nnb 06"]:::teal -->
+        T7["Finetune\nSAM 3.1\nnb 03"]:::teal -->
+        T8["MLflow /\nUC Model\nRegistry"]:::teal -->
+        MSE["Model Serving\nEndpoint"]:::bridge
+    end
+
+    %% ── INFERENCE band (bottom row) ─────────────────────────────
+    subgraph INFER["  ② INFERENCE PIPELINE  "]
+        I1["Image Upload\nor UC Volume Path"]:::coral -->
+        I2["CV Inspect App\nPlotly Dash"]:::coral
+        I2 --> I3["Finetuned Detector\ndatabricks_endpoint backend"]:::coral
+        I2 --> I4["Vision LLM via FM API\nvlm_proxy backend, fallback"]:::coral
+        I3 --> I5["Annotated Image\n+ Detection Table"]:::coral
+        I4 --> I5
+    end
+
+    %% Cross-band dashed link — drawn FROM inference TO training
+    %% so Dagre keeps TRAIN in left rank and INFER in right rank
+    I3 -. "↑ same endpoint\nas MSE above" .-> MSE

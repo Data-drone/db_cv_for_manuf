@@ -9,8 +9,11 @@ file-arrival job, no polling.
 from __future__ import annotations
 
 import base64
+import json
 import os
 import traceback
+import uuid
+from datetime import datetime, timezone
 
 import dash
 import dash_bootstrap_components as dbc
@@ -96,6 +99,7 @@ sidebar = dbc.Card(
                     children=[
                         dcc.Tab(label="Image", value="image"),
                         dcc.Tab(label="Video", value="video"),
+                        dcc.Tab(label="Batch", value="batch"),
                     ],
                     className="mb-3",
                 ),
@@ -149,6 +153,31 @@ sidebar = dbc.Card(
                                 className="mb-2",
                             ),
                         ),
+                    ],
+                    style={"display": "none"},
+                ),
+                html.Div(
+                    id="batch-controls",
+                    children=[
+                        html.Label("Input folder", className="small"),
+                        dcc.Input(
+                            id="batch-input-path",
+                            type="text",
+                            value="/Volumes/ramcar_motolite_catalog/cv_manufacturing/raw",
+                            placeholder="/Volumes/<catalog>/<schema>/<volume>/<folder>",
+                            className="form-control mb-2",
+                            style={"width": "100%"},
+                        ),
+                        html.Label("Output folder", className="small"),
+                        dcc.Input(
+                            id="batch-output-path",
+                            type="text",
+                            value="",
+                            placeholder="auto-derived from input + run_id",
+                            className="form-control mb-2",
+                            style={"width": "100%"},
+                        ),
+                        html.Div(id="batch-status", className="text-muted small mb-2"),
                     ],
                     style={"display": "none"},
                 ),
@@ -219,6 +248,7 @@ sidebar = dbc.Card(
                     style={"display": "none"},
                 ),
                 dbc.Button("Run inspection", id="run-btn", color="primary", className="w-100"),
+                dbc.Button("Start batch job", id="batch-run-btn", color="primary", className="w-100", style={"display": "none"}),
             ]
         ),
     ]
@@ -239,6 +269,23 @@ results_panel = dbc.Card(
     ]
 )
 
+history_panel = dbc.Card(
+    [
+        dbc.CardHeader([
+            "Recent batch runs",
+            dbc.Button("Refresh", id="history-refresh-btn", color="secondary", size="sm",
+                       className="float-end", style={"padding": "2px 10px", "fontSize": "11px"}),
+        ]),
+        dbc.CardBody(
+            dcc.Loading(type="dot", children=html.Div(id="history-table",
+                children=html.Div("Click Refresh to load.", className="text-muted small"))),
+        ),
+    ],
+    className="mt-3",
+    id="history-card",
+    style={"display": "none"},
+)
+
 app.layout = html.Div(
     [
         header,
@@ -247,7 +294,7 @@ app.layout = html.Div(
                 dbc.Row(
                     [
                         dbc.Col(sidebar, md=4),
-                        dbc.Col(results_panel, md=8),
+                        dbc.Col([results_panel, history_panel], md=8),
                     ],
                     className="main-row",
                 ),
@@ -266,19 +313,49 @@ app.layout = html.Div(
     Output("video-controls", "style"),
     Output("model", "options"),
     Output("model", "value"),
+    Output("source", "style"),
+    Output("upload-controls", "style", allow_duplicate=True),
+    Output("volume-controls", "style", allow_duplicate=True),
+    Output("batch-controls", "style"),
+    Output("run-btn", "style"),
+    Output("batch-run-btn", "style"),
+    Output("history-card", "style"),
     Input("family", "value"),
     Input("input-mode", "value"),
+    State("source", "value"),
     State("model", "value"),
+    prevent_initial_call="initial_duplicate",
 )
-def _toggle_controls(family, input_mode, current_model):
-    vlm_style = {} if family == "vlm" else {"display": "none"}
-    detector_style = {} if family == "detector" else {"display": "none"}
-    video_style = {} if input_mode == "video" else {"display": "none"}
-    opts = _model_options(family)
+def _toggle_controls(family, input_mode, source_value, current_model):
+    is_batch = input_mode == "batch"
+    is_video = input_mode == "video"
+    # Batch can only run detectors (no per-frame text aggregation makes sense for VLM batch)
+    effective_family = "detector" if is_batch else family
+    vlm_style = {} if (effective_family == "vlm" and not is_batch) else {"display": "none"}
+    detector_style = {} if effective_family == "detector" else {"display": "none"}
+    video_style = {} if is_video else {"display": "none"}
+    source_style = {"display": "none"} if is_batch else {}
+    upload_style = (
+        {"display": "none"} if is_batch
+        else ({} if source_value == "upload" else {"display": "none"})
+    )
+    volume_style = (
+        {"display": "none"} if is_batch
+        else ({} if source_value == "volume" else {"display": "none"})
+    )
+    batch_style = {} if is_batch else {"display": "none"}
+    run_btn_style = {"display": "none"} if is_batch else {}
+    batch_run_btn_style = {} if is_batch else {"display": "none"}
+    history_style = {} if is_batch else {"display": "none"}
+    opts = _model_options(effective_family)
     if not opts:
-        return vlm_style, detector_style, video_style, [], None
+        return (vlm_style, detector_style, video_style, [], None,
+                source_style, upload_style, volume_style, batch_style,
+                run_btn_style, batch_run_btn_style, history_style)
     new_value = current_model if any(o["value"] == current_model for o in opts) else opts[0]["value"]
-    return vlm_style, detector_style, video_style, opts, new_value
+    return (vlm_style, detector_style, video_style, opts, new_value,
+            source_style, upload_style, volume_style, batch_style,
+            run_btn_style, batch_run_btn_style, history_style)
 
 
 @app.callback(
@@ -299,11 +376,15 @@ def _store_upload(contents, filename):
 
 
 @app.callback(
-    Output("upload-controls", "style"),
-    Output("volume-controls", "style"),
+    Output("upload-controls", "style", allow_duplicate=True),
+    Output("volume-controls", "style", allow_duplicate=True),
     Input("source", "value"),
+    State("input-mode", "value"),
+    prevent_initial_call=True,
 )
-def _toggle_source(source):
+def _toggle_source(source, input_mode):
+    if input_mode == "batch":
+        return {"display": "none"}, {"display": "none"}
     return (
         {} if source == "upload" else {"display": "none"},
         {} if source == "volume" else {"display": "none"},
@@ -377,6 +458,67 @@ def _load_from_volume(file_path):
         )
     except Exception as e:
         return None, f"Volume load error: {e}"
+
+
+def _ws_client():
+    if not hasattr(_ws_client, "_w"):
+        from databricks.sdk import WorkspaceClient
+        _ws_client._w = WorkspaceClient()
+    return _ws_client._w
+
+
+def _query_batch_log(limit: int = 20) -> list[dict]:
+    catalog = os.environ.get("CATALOG", "ramcar_motolite_catalog")
+    schema = os.environ.get("SCHEMA", "cv_manufacturing")
+    warehouse_id = os.environ.get("WAREHOUSE_ID", "")
+    if not warehouse_id:
+        raise RuntimeError("WAREHOUSE_ID env var not set — needed to query batch_run_log")
+    sql = (
+        f"SELECT run_id, started_at, completed_at, status, "
+        f"input_path, output_path, model_label, image_count, detection_count "
+        f"FROM {catalog}.{schema}.batch_run_log "
+        f"ORDER BY started_at DESC LIMIT {limit}"
+    )
+    w = _ws_client()
+    resp = w.statement_execution.execute_statement(
+        statement=sql, warehouse_id=warehouse_id, wait_timeout="30s"
+    )
+    if resp.status and str(resp.status.state) not in ("StatementState.SUCCEEDED", "SUCCEEDED"):
+        raise RuntimeError(f"SQL state: {resp.status.state} | {resp.status.error}")
+    rows = []
+    if resp.result and resp.result.data_array:
+        cols = [c.name for c in resp.manifest.schema.columns]
+        for row in resp.result.data_array:
+            rows.append(dict(zip(cols, row)))
+    return rows
+
+
+def _trigger_batch_job(input_path: str, output_path: str, model_id: str) -> int:
+    job_id = os.environ.get("BATCH_JOB_ID", "")
+    if not job_id:
+        raise RuntimeError("BATCH_JOB_ID env var not set — bundle deploy must register the cv-manuf-batch-detect job")
+    model = config.by_id(model_id)
+    if model.family != "detector":
+        raise RuntimeError("Batch jobs only support detector-family models.")
+    cfg = model.backend_config
+    catalog = os.environ.get("CATALOG", "ramcar_motolite_catalog")
+    schema = os.environ.get("SCHEMA", "cv_manufacturing")
+    params = {
+        "catalog": catalog,
+        "schema": schema,
+        "input_path": input_path.rstrip("/"),
+        "output_path": output_path.rstrip("/"),
+        "vlm_endpoint": cfg.get("vlm_endpoint", "databricks-gemini-2-5-pro"),
+        "classes": json.dumps(list(cfg.get("classes", []))),
+        "instructions": cfg.get("instructions", ""),
+        "model_label": model.label,
+        "model_id": model.id,
+        "threshold": "0.0",
+        "max_files": "200",
+    }
+    w = _ws_client()
+    run = w.jobs.run_now(job_id=int(job_id), notebook_params=params)
+    return int(run.run_id)
 
 
 def _detection_table(detections):
@@ -494,6 +636,172 @@ def _run(n_clicks, input_mode, upload, family, model_id, prompt, threshold, fram
         tb = traceback.format_exc()
         print(f"[run] EXCEPTION:\n{tb}")
         return dbc.Alert([html.B("Error: "), html.Pre(tb)], color="danger")
+
+
+@app.callback(
+    Output("batch-output-path", "value", allow_duplicate=True),
+    Input("batch-input-path", "value"),
+    State("batch-output-path", "value"),
+    prevent_initial_call=True,
+)
+def _autoderive_output_path(input_path, current_output):
+    if current_output:
+        return no_update
+    if not input_path or not input_path.startswith("/Volumes/"):
+        return no_update
+    parts = input_path.rstrip("/").split("/")
+    if len(parts) < 5:
+        return no_update
+    catalog, schema, volume = parts[2], parts[3], parts[4]
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return f"/Volumes/{catalog}/{schema}/{volume}/_outputs/{ts}"
+
+
+@app.callback(
+    Output("result", "children", allow_duplicate=True),
+    Output("history-table", "children", allow_duplicate=True),
+    Output("batch-status", "children"),
+    Input("batch-run-btn", "n_clicks"),
+    State("batch-input-path", "value"),
+    State("batch-output-path", "value"),
+    State("model", "value"),
+    prevent_initial_call=True,
+)
+def _start_batch(n_clicks, input_path, output_path, model_id):
+    if not n_clicks:
+        return no_update, no_update, no_update
+    if not input_path or not output_path or not model_id:
+        return no_update, no_update, dbc.Alert("Set input path, output path, and model.", color="warning")
+    if not output_path.startswith("/Volumes/"):
+        return no_update, no_update, dbc.Alert("Output path must start with /Volumes/", color="warning")
+    try:
+        run_id = _trigger_batch_job(input_path, output_path, model_id)
+        print(f"[batch] triggered job_run_id={run_id}", flush=True)
+        banner = dbc.Alert([
+            html.B("Batch job submitted. "),
+            f"Databricks job run_id={run_id}. ",
+            html.Small("Click Refresh in Recent batch runs to see status."),
+        ], color="success")
+        # also refresh history immediately
+        try:
+            rows = _query_batch_log()
+            history = _render_history_table(rows)
+        except Exception as e:
+            history = html.Div(f"history error: {e}", className="text-muted small")
+        return banner, history, ""
+    except Exception:
+        tb = traceback.format_exc()
+        print(f"[batch] EXCEPTION:\n{tb}", flush=True)
+        return no_update, no_update, dbc.Alert([html.B("Error: "), html.Pre(tb, style={"fontSize": "11px"})], color="danger")
+
+
+def _render_history_table(rows):
+    if not rows:
+        return html.Div("No runs yet.", className="text-muted small")
+    headers = ["Started", "Completed", "Status", "Model", "Images", "Detections", "Output", ""]
+    body_rows = []
+    for r in rows:
+        run_id = r.get("run_id", "")
+        started = (r.get("started_at") or "")[:19].replace("T", " ")
+        completed = (r.get("completed_at") or "—")
+        if completed and completed != "—":
+            completed = completed[:19].replace("T", " ")
+        status = r.get("status", "?")
+        status_color = {"SUCCESS": "success", "RUNNING": "warning", "FAILED": "danger"}.get(status, "secondary")
+        body_rows.append(html.Tr([
+            html.Td(started, style={"fontSize": "11px"}),
+            html.Td(completed, style={"fontSize": "11px"}),
+            html.Td(dbc.Badge(status, color=status_color)),
+            html.Td(r.get("model_label") or "?", style={"fontSize": "12px"}),
+            html.Td(r.get("image_count") or 0),
+            html.Td(r.get("detection_count") or 0),
+            html.Td(html.Code(r.get("output_path", "")[-50:], style={"fontSize": "10px"})),
+            html.Td(dbc.Button("View ▸", id={"type": "view-run-btn", "run_id": run_id},
+                               n_clicks=0, color="secondary", size="sm",
+                               style={"fontSize": "11px", "padding": "2px 8px"})),
+        ]))
+    return dbc.Table(
+        [html.Thead(html.Tr([html.Th(h) for h in headers])), html.Tbody(body_rows)],
+        striped=True, bordered=True, size="sm", className="mb-0", responsive=True,
+    )
+
+
+@app.callback(
+    Output("history-table", "children", allow_duplicate=True),
+    Input("history-refresh-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def _refresh_history(n_clicks):
+    if not n_clicks:
+        return no_update
+    try:
+        rows = _query_batch_log()
+        return _render_history_table(rows)
+    except Exception as e:
+        return dbc.Alert(f"History query failed: {e}", color="danger")
+
+
+@app.callback(
+    Output("result", "children", allow_duplicate=True),
+    Input({"type": "view-run-btn", "run_id": dash.ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def _view_run(n_clicks_list):
+    triggered = dash.callback_context.triggered_id
+    if not triggered:
+        return no_update
+    if not any(n_clicks_list or []):
+        return no_update
+    run_id = triggered.get("run_id")
+    if not run_id:
+        return no_update
+    try:
+        # Re-query the row to get its output_path
+        rows = _query_batch_log(limit=200)
+        match = next((r for r in rows if r.get("run_id") == run_id), None)
+        if not match:
+            return dbc.Alert(f"Run {run_id} not found in log.", color="warning")
+        output_path = match.get("output_path", "").rstrip("/")
+        if not output_path:
+            return dbc.Alert("Run has no output_path.", color="warning")
+        w = _ws_client()
+        annotated_dir = f"{output_path}/annotated"
+        try:
+            entries = list(w.files.list_directory_contents(annotated_dir))
+        except Exception as e:
+            return dbc.Alert(f"Could not list {annotated_dir}: {e}", color="danger")
+        files = sorted([e.name for e in entries if e.name and not getattr(e, "is_directory", False)])
+        thumbs = []
+        for name in files[:24]:
+            try:
+                dl = w.files.download(f"{annotated_dir}/{name}")
+                data = dl.contents.read()
+                try: dl.contents.close()
+                except Exception: pass
+                b64 = base64.b64encode(data).decode()
+                thumbs.append(html.Div([
+                    html.Img(src=f"data:image/jpeg;base64,{b64}",
+                             style={"width": "100%", "borderRadius": "6px"}),
+                    html.Div(name, className="text-muted small mt-1", style={"fontSize": "10px", "wordBreak": "break-all"}),
+                ], style={"width": "32%", "marginBottom": "12px"}))
+            except Exception:
+                continue
+        header = html.Div([
+            html.H6(f"Run {run_id[:8]}… — {match.get('model_label')}"),
+            html.Div([
+                f"{match.get('image_count')} images · {match.get('detection_count')} detections · ",
+                html.Code(output_path, style={"fontSize": "11px"}),
+            ], className="text-muted small mb-3"),
+        ])
+        gallery_note = html.Div(f"Showing {len(thumbs)} of {len(files)} annotated images",
+                                className="text-muted small mb-2") if len(files) > len(thumbs) else None
+        return html.Div([
+            header,
+            gallery_note,
+            html.Div(thumbs, style={"display": "flex", "flexWrap": "wrap", "gap": "1%"}),
+        ])
+    except Exception:
+        return dbc.Alert([html.B("View error: "), html.Pre(traceback.format_exc(), style={"fontSize": "11px"})], color="danger")
 
 
 if __name__ == "__main__":
