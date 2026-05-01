@@ -1,0 +1,48 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "primaryColor": "#1B3139",
+    "primaryTextColor": "#FFFFFF",
+    "primaryBorderColor": "#0D1E24",
+    "lineColor": "#2C3032",
+    "secondaryColor": "#F5F7F9",
+    "secondaryTextColor": "#2C3032",
+    "tertiaryColor": "#00A972",
+    "tertiaryTextColor": "#FFFFFF",
+    "background": "#F5F7F9",
+    "mainBkg": "#F5F7F9",
+    "nodeBorder": "#1B3139",
+    "clusterBkg": "#F5F7F9",
+    "clusterBorder": "#2C3032",
+    "titleColor": "#1B3139",
+    "edgeLabelBackground": "#F5F7F9",
+    "fontFamily": "Inter, Helvetica Neue, Arial, sans-serif",
+    "fontSize": "15px",
+    "cScale0": "#FF3621",
+    "cScale1": "#CC4422",
+    "cScale2": "#336644",
+    "cScale3": "#007A52",
+    "cScale4": "#00A972"
+  }
+}}%%
+timeline
+    title Manufacturing EyeQ — Customer Journey
+    section The Problem
+        Day 1 : 200 cameras. Nobody watching.
+              : Defects ship. Hazards missed.
+    section Deploy
+        Day 2 : make deploy CATALOG=...
+              : Schema + Volumes + Apps live in 20 min
+              : First inspection via Vision LLM
+    section Label + Train
+        Day 3 : QA team labels 200 images in CV Explorer
+              : Bundle pipeline finetunes SAM 3.1
+              : Registers to UC — deploys serving endpoint
+    section Swap the Brain
+        Day 4 : One-line config swap — vlm_proxy to databricks_endpoint
+              : Same UI now uses the finetuned detector
+              : False positives drop. Confidence rises.
+    section Scale
+        Day 30 : Three plants. Three finetuned endpoints.
+               : Helmet · PCB · Corrosion detection
+               : One app — all governed by Unity Catalog

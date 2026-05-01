@@ -17,6 +17,9 @@ variables:
   hf_secret_key:
     description: Key within the secret scope for the HuggingFace token
     default: hf-token
+  warehouse_id:
+    description: SQL warehouse the cv_manuf_inspect app uses to query batch_run_log
+    default: ""
   vs_endpoint_name:
     description: Databricks Vector Search endpoint name
     default: cv-vector-search

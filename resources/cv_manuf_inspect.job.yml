@@ -1,0 +1,33 @@
+resources:
+  jobs:
+    cv_manuf_batch_detect:
+      name: cv-manuf-batch-detect-${bundle.target}
+      description: "Run the VLM-proxy detector over a UC Volume folder; logs to <catalog>.<schema>.batch_run_log."
+      max_concurrent_runs: 5
+      queue:
+        enabled: true
+      performance_target: PERFORMANCE_OPTIMIZED
+      tasks:
+        - task_key: batch_detect
+          environment_key: default
+          notebook_task:
+            notebook_path: ../notebooks/job_batch_detect.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              input_path: ""
+              output_path: ""
+              vlm_endpoint: "databricks-gemini-2-5-pro"
+              classes: "[]"
+              instructions: ""
+              model_label: ""
+              model_id: ""
+              threshold: "0.0"
+              max_files: "200"
+            source: WORKSPACE
+      environments:
+        - environment_key: default
+          spec:
+            client: "3"
+            dependencies:
+              - opencv-python-headless==4.10.0.84

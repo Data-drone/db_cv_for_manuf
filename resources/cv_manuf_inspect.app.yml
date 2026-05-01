@@ -4,3 +4,13 @@ resources:
       name: cv-manuf-inspect-${bundle.target}
       description: "Computer vision inspection: image/video × finetuned detectors or vision LLMs, served from Databricks."
       source_code_path: ../app
+      config:
+        env:
+          - name: CATALOG
+            value: ${var.catalog}
+          - name: SCHEMA
+            value: ${var.schema}
+          - name: BATCH_JOB_ID
+            value: ${resources.jobs.cv_manuf_batch_detect.id}
+          - name: WAREHOUSE_ID
+            value: ${var.warehouse_id}
